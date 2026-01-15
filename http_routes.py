@@ -90,7 +90,6 @@ def api_sessions():
             "software": session.software,
             "environment": session.environment,
             "impact": session.impact,
-            "current_step": session.current_step,
             "is_confirmed": session.is_confirmed,
             "ticket_id": session.ticket_id,
             "created_at": session.created_at.isoformat(),
@@ -173,8 +172,8 @@ def _dashboard_html(refresh: int) -> str:
           <div class="info-row"><span class="label">Software:</span> <span class="value">${{s.software || '—'}}</span></div>
           <div class="info-row"><span class="label">Environment:</span> <span class="value">${{s.environment || '—'}}</span></div>
           <div class="info-row"><span class="label">Impact:</span> <span class="value">${{s.impact || '—'}}</span></div>
-          <div class="info-row"><span class="label">Step:</span> <span class="step ${{step_cls}}">${{s.current_step}}</span></div>
-          <div class="info-row"><span class="label">Ticket:</span> <span class="value">${{s.ticket_id || 'Pending'}}</span></div>
+          <div class="info-row"><span class="label">Status:</span> <span class="step ${{{{s.is_confirmed ? 'confirmed' : ''}}}}">${{{{{{s.is_confirmed ? 'Confirmed' : 'Pending'}}}}}}</span></div>
+          <div class="info-row"><span class="label">Ticket:</span> <span class="value">${{{{{{s.ticket_id || 'Pending'}}}}}}</span></div>
         `;
         grid.appendChild(card);
       }}

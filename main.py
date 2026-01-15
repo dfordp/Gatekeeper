@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 from session import get_or_create_session, clear_session
 from ticket import create_ticket_from_session
-from agent_functions import FUNCTION_MAP, classify_issue_category
+from agent_functions import FUNCTION_MAP, classify_issue_category, _confirm_and_create_ticket
 from prompt import GATEKEEPER_PROMPT
 from http_routes import http_router
 
@@ -95,11 +95,15 @@ async def extract_and_save(chat_id: int, text: str, session) -> None:
     if not text or not t:
         return
     
-    # Try to detect and save issue description (longer text, early in conversation)
-    if not session.issue_description and len(text) > 15:
-        session.issue_description = text
-        session.issue_category = classify_issue_category(text)
-        return
+    # Try to detect and save issue description FIRST (longer text, or contains issue keywords)
+    if not session.issue_description:
+        issue_keywords = ['unable', 'unable to', 'can\'t', 'cannot', 'problem', 'issue', 'error', 'slow', 'blocked', 'crash', 'not working', 'broken']
+        has_issue_keyword = any(kw in t for kw in issue_keywords)
+        
+        if (len(text) > 15) or has_issue_keyword:
+            session.issue_description = text
+            session.issue_category = classify_issue_category(text)
+            return
     
     # Try to extract name and company (look for comma-separated or natural structure)
     if not session.user_name:
@@ -108,10 +112,13 @@ async def extract_and_save(chat_id: int, text: str, session) -> None:
             session.user_name = parts[0]
             session.company_name = parts[1]
             return
-        # Or just take first non-trivial input as name if it looks like a name
-        if len(text) > 2 and len(text) < 50 and not any(c in text.lower() for c in ['prod', 'test', 'local', 'blocked', 'slow']):
-            session.user_name = text
-            return
+        # Only take short text as name (2-50 chars), avoid issue descriptions
+        if len(text) > 2 and len(text) < 50:
+            is_issue = any(kw in t for kw in ['unable', 'problem', 'error', 'slow', 'blocked', 'crash'])
+            is_env = any(kw in t for kw in ['prod', 'test', 'local', 'uat'])
+            if not is_issue and not is_env:
+                session.user_name = text
+                return
     
     if not session.company_name and session.user_name and len(text) > 2 and len(text) < 100:
         session.company_name = text
@@ -161,7 +168,7 @@ async def extract_and_save(chat_id: int, text: str, session) -> None:
         if len(text) < 50 and not any(c in t for c in ['blocked', 'slow', 'faster', 'production', 'test']):
             session.software = text
             return
-
+        
 # ------------------ LLM ------------------
 
 async def run_llm(chat_id: int, user_text: str) -> str:
@@ -186,6 +193,32 @@ async def run_llm(chat_id: int, user_text: str) -> str:
     if not session.impact:
         missing.append("impact level")
 
+    # Check if we have all required info BEFORE building context
+    all_collected = all([
+        session.user_name,
+        session.company_name,
+        session.issue_description,
+        session.software,
+        session.environment,
+        session.impact
+    ])
+
+    # Check if user is confirming (yes, confirm, create, submit, etc.)
+    confirmation_keywords = ['yes', 'confirm', 'create', 'submit', 'proceed', 'ok', 'alright', 'sounds good']
+    user_says_yes = any(keyword in user_text.lower() for keyword in confirmation_keywords)
+
+    # Auto-confirm and create ticket if all info present and user confirms
+    if all_collected and user_says_yes and not session.ticket_created:
+        session.is_confirmed = True
+        ticket = create_ticket_from_session(session)
+        if ticket:
+            session.ticket_created = True
+            reply = f"✅ Ticket created successfully! Your ticket ID is: **{ticket.ticket_id}**\n\nOur support team will review this and get back to you shortly."
+            send_message(chat_id, reply)
+            clear_session(chat_id)
+            conversation_state.pop(chat_id, None)
+            return reply
+
     # Build context
     session_context = f"""
 Session State:
@@ -197,11 +230,12 @@ Session State:
 - Environment: {session.environment or 'Not provided'}
 - Impact: {session.impact or 'Not provided'}
 - Files: {len(session.attachments)} attached
+- Status: {'Ready for ticket creation - ask for confirmation' if all_collected else 'Collecting information'}
 
 Missing Information (ask for next missing item naturally):
-{', '.join(missing) if missing else 'None - ready to confirm'}
+{', '.join(missing) if missing else 'None - ask user to confirm and create ticket'}
 """
-
+    
     messages = [
         {"role": "system", "content": GATEKEEPER_PROMPT + session_context},
         *history,
@@ -228,24 +262,6 @@ Missing Information (ask for next missing item naturally):
         + [{"role": "user", "content": user_text}]
         + [{"role": "assistant", "content": reply}]
     )[-10:]
-
-    # Check if we have all required info and user seems ready to close
-    all_collected = all([
-        session.user_name,
-        session.company_name,
-        session.issue_description,
-        session.software,
-        session.environment,
-        session.impact
-    ])
-    
-    # Auto-create ticket if confirmed and all info present
-    if all_collected and not session.ticket_created and session.is_confirmed:
-        ticket = create_ticket_from_session(session)
-        if ticket:
-            session.ticket_created = True
-            clear_session(chat_id)
-            conversation_state.pop(chat_id, None)
 
     return reply
 
@@ -289,7 +305,8 @@ async def telegram_webhook(req: Request):
 
 @app.get("/health")
 async def health():
+    from session import sessions
     return {
         "status": "ok",
-        "active_sessions": len(conversation_state)
+        "active_sessions": len(sessions)
     }
