@@ -1,4 +1,3 @@
-# main.py - ENHANCED with Vision AI for screenshots and videos
 from fastapi import FastAPI, Request
 import requests
 import os

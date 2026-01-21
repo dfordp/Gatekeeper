@@ -32,7 +32,7 @@ INDEX_HTML = """<!DOCTYPE html>
     * { box-sizing: border-box; }
     body { margin:0; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
            min-height:100vh; display:grid; place-items:center; background: #f7fafc; }
-    .card { background: rgba(255,255,255,0.95); border-radius: 20px; padding: 32px; max-width: 900px; width: 94%;
+    .card { background: rgba(0,0,0,0); border-radius: 20px; padding: 32px; max-width: 900px; width: 94%;
             box-shadow: 0 18px 60px rgba(0,0,0,0.25); }
     h1 { margin: 0 0 8px; color:#2d3748; }
     p  { margin: 0 0 20px; color:#4a5568; }
@@ -201,11 +201,12 @@ def _tickets_html(refresh: int) -> str:
   <style>
     :root {{ color-scheme: light dark; }}
     body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; margin:24px; background:#f7fafc; }}
-    h1 {{ margin: 0 0 8px; }}
+    h1 {{ margin: 0 0 8px; color: #1a202c; }}
     .muted {{ color:#777; font-size: 12px; margin: 0 0 14px; }}
     table {{ width: 100%; border-collapse: collapse; background:#fff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
     th, td {{ border-bottom: 1px solid #e2e8f0; padding: 12px; text-align: left; }}
-    th {{ background: #f7fafc; font-weight: 600; color: #2d3748; }}
+    th {{ background: #f7fafc; font-weight: 600; color: #1a202c; }}
+    td {{ color: #1a202c; }}
     tr:hover {{ background: #f9fafb; }}
     .ticket-id {{ font-weight: 700; color: #667eea; }}
     .nowrap {{ white-space: nowrap; }}
