@@ -68,7 +68,52 @@ class EmbeddingService:
     CHUNK_SIZE = 1500
     CHUNK_OVERLAP = 100
     MAX_TEXT_LENGTH = 2000
+    _dynamic_thresholds = None
     
+    @classmethod
+    def _load_thresholds(cls, company_id: str = None):
+        """Load thresholds once, cache them."""
+        if cls._dynamic_thresholds is None:
+            try:
+                from adaptive_threshold_service import AdaptiveThresholdService
+                
+                # If company_id not provided, get the first company from database
+                if not company_id:
+                    from database import SessionLocal, Company
+                    db = SessionLocal()
+                    company = db.query(Company).first()
+                    db.close()
+                    if company:
+                        company_id = str(company.id)
+                
+                if company_id:
+                    cls._dynamic_thresholds = AdaptiveThresholdService.calculate_optimal_thresholds(
+                        company_id
+                    )
+                else:
+                    # No company found, use defaults
+                    logger.warning("No company found in database, using default thresholds")
+                    cls._dynamic_thresholds = cls._get_default_thresholds()
+            except Exception as e:
+                logger.warning(f"Could not load adaptive thresholds: {e}, using defaults")
+                cls._dynamic_thresholds = cls._get_default_thresholds()
+        return cls._dynamic_thresholds
+
+    @classmethod
+    def _get_default_thresholds(cls) -> dict:
+        """Get default thresholds."""
+        return {
+            "Login / Access": 0.55,
+            "License": 0.55,
+            "Performance": 0.50,
+            "Installation": 0.55,
+            "Upload or Save": 0.55,
+            "Workflow": 0.50,
+            "Integration": 0.55,
+            "Data / Configuration": 0.55,
+            "Other": 0.55
+        }
+        
     # Confidence thresholds per category
     # For cosine similarity: 0.5-0.6 = similar, 0.7+ = very similar
     CONFIDENCE_THRESHOLDS = {
@@ -344,18 +389,20 @@ class EmbeddingService:
         return count
     
     @staticmethod
-    def get_confidence_threshold(category: str) -> float:
+    def get_confidence_threshold(category: str, company_id: str = None) -> float:
         """
-        Get the confidence threshold for a category.
-        Used when searching to determine if a match is good enough.
+        Get confidence threshold for a category.
+        Now dynamically calculated based on actual search performance!
         
         Args:
-            category: Ticket category (e.g., "Login / Access")
+            category: Ticket category
+            company_id: Optional - uses this company's data to calculate
             
         Returns:
-            Confidence threshold (0.0 to 1.0)
+            Optimal threshold based on historical performance
         """
-        return EmbeddingService.CONFIDENCE_THRESHOLDS.get(category, 0.75)
+        thresholds = EmbeddingService._load_thresholds(company_id)
+        return thresholds.get(category, thresholds.get("Other", 0.55))
     
     @staticmethod
     def get_stats() -> dict:
