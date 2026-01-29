@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  api:
+    image: your-registry/gatekeeper-api:latest
+    container_name: gatekeeper-api-prod
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      QDRANT_URL: ${QDRANT_URL}
+      QDRANT_API_KEY: ${QDRANT_API_KEY}
+      JWT_SECRET: ${JWT_SECRET}
+      CORS_ORIGINS: ${CORS_ORIGINS}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DEBUG: ${DEBUG:-False}
+    ports:
+      - "8000:8000"
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - gatekeeper-network
+    logging:
+      driver: awslogs
+      options:
+        awslogs-group: /ecs/gatekeeper-api
+        awslogs-region: us-east-1
+        awslogs-stream-prefix: ecs
+
+  # Optional: Nginx reverse proxy for production
+  nginx:
+    image: nginx:alpine
+    container_name: gatekeeper-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - api
+    networks:
+      - gatekeeper-network
+
+networks:
+  gatekeeper-network:
+    driver: bridge

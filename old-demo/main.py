@@ -27,6 +27,7 @@ from enum import Enum
 
 # ==================== SETUP ====================
 
+
 # Logging
 logging.basicConfig(
     level=logging.INFO,
@@ -62,6 +63,7 @@ client = Groq(api_key=GROQ_API_KEY)
 # FastAPI app
 app = FastAPI(title="Gatekeeper Support Intake System")
 app.include_router(http_router)
+
 
 # Conversation history (temporary, per session)
 conversation_state: dict[int, list] = {}
