@@ -1,78 +1,148 @@
-from fastapi import FastAPI, Request
-import requests
+# server/main.py
+"""
+Gatekeeper Support Platform - Main FastAPI Application
+
+Integrates admin authentication, ticket management, and Telegram bot integration.
+Features:
+- JWT-based admin authentication
+- Modular service architecture
+- Telegram webhook integration
+- Audit logging
+- Semantic search and deduplication
+"""
+
 import os
-import logging
+import sys
+import requests
 import base64
 import mimetypes
-from groq import Groq
-from dotenv import load_dotenv
+from enum import Enum
+from datetime import datetime
 
+# FastAPI
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+
+# Groq AI
+from groq import Groq
+
+# Core imports
+from core.database import init_db, test_connection
+from core.config import CORS_ORIGINS, TELEGRAM_TOKEN, TELEGRAM_API, GROQ_API_KEY, MODEL, VISION_MODEL
+from core.logger import get_logger
+
+# Middleware
+from middleware.error_handler import register_error_handlers
+from middleware.audit_middleware import audit_middleware
+
+# Routes
+from routes.auth_routes import router as auth_router
+from routes.dashboard_routes import router as dashboard_router
+
+# Legacy session management (keeping for bot compatibility)
 from session import (
     IssueCategory,
-    get_or_create_session, 
-    clear_session, 
+    get_or_create_session,
+    clear_session,
     ValidationError,
     SUPPORTED_SOFTWARE
 )
+
+# Legacy agent functions
 from agent_functions import (
-    classify_issue_category, 
+    classify_issue_category,
     _confirm_and_create_ticket,
     _get_session_data,
     _get_available_options,
     _calculate_completeness
 )
+
+# Legacy prompts
 from prompt import GATEKEEPER_PROMPT
 from http_routes import http_router
-from enum import Enum
 
-# ==================== SETUP ====================
+# ==================== SETUP & CONFIGURATION ====================
 
+logger = get_logger(__name__)
 
-# Logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-# Environment
-load_dotenv()
-
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-
-if not TELEGRAM_TOKEN:
-    raise RuntimeError("Missing TELEGRAM_BOT_TOKEN")
-if not GROQ_API_KEY:
-    raise RuntimeError("Missing GROQ_API_KEY")
-
-TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-MODEL = "llama-3.1-8b-instant"
-VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
-UPLOADS_DIR = "uploads"
+# Initialize Groq client
+groq_client = Groq(api_key=GROQ_API_KEY)
 
 # File size limits (in bytes)
 MAX_IMAGE_SIZE = 5 * 1024 * 1024  # 5MB for images
 MAX_VIDEO_SIZE = 20 * 1024 * 1024  # 20MB for videos
 
+# Upload directory
+UPLOADS_DIR = "uploads"
 os.makedirs(UPLOADS_DIR, exist_ok=True)
-
-# Groq client
-client = Groq(api_key=GROQ_API_KEY)
-
-# FastAPI app
-app = FastAPI(title="Gatekeeper Support Intake System")
-app.include_router(http_router)
-
 
 # Conversation history (temporary, per session)
 conversation_state: dict[int, list] = {}
 
-# ==================== TELEGRAM HELPERS ====================
+# Validation
+if not TELEGRAM_TOKEN:
+    logger.warning("Missing TELEGRAM_BOT_TOKEN - Telegram bot will not work")
+if not GROQ_API_KEY:
+    logger.warning("Missing GROQ_API_KEY - AI features will not work")
+
+# ==================== FASTAPI APPLICATION ====================
+
+app = FastAPI(
+    title="Gatekeeper Support Platform",
+    description="Support ticket management system with semantic search, deduplication, and admin portal",
+    version="2.0.0"
+)
+
+# ==================== MIDDLEWARE SETUP ====================
+
+# CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Audit middleware for admin actions
+app.middleware("http")(audit_middleware)
+
+# ==================== ERROR HANDLERS ====================
+
+register_error_handlers(app)
+
+# ==================== ROUTE REGISTRATION ====================
+
+# Authentication routes (Phase 1)
+app.include_router(auth_router)
+app.include_router(dashboard_router)
+# Legacy HTTP routes (existing bot)
+app.include_router(http_router)
+
+# Additional routers will be registered here as they're created
+# - Ticket routes (Phase 3)
+# - Import routes (Phase 2)
+# - RCA routes (Phase 6)
+# - Analytics routes (Phase 3)
+
+# ==================== TELEGRAM HELPER FUNCTIONS ====================
 
 def send_message(chat_id: int, text: str) -> bool:
-    """Send message to Telegram chat. Returns success status."""
+    """
+    Send message to Telegram chat.
+    
+    Args:
+        chat_id: Telegram chat ID
+        text: Message text
+        
+    Returns:
+        True if successful, False otherwise
+    """
     if not text or not text.strip():
+        return False
+    
+    if not TELEGRAM_TOKEN:
+        logger.warning("Telegram token not configured")
         return False
     
     try:
@@ -83,12 +153,25 @@ def send_message(chat_id: int, text: str) -> bool:
         )
         return resp.status_code == 200
     except Exception as e:
-        logger.error(f"Telegram send failed: {e}")
+        logger.error(f"Telegram send failed for chat {chat_id}: {e}")
         return False
 
 
 async def download_file(file_id: str, file_name: str, max_size: int = None) -> str | None:
-    """Download file from Telegram with optional size limit."""
+    """
+    Download file from Telegram.
+    
+    Args:
+        file_id: Telegram file ID
+        file_name: Local file name
+        max_size: Optional max file size in bytes
+        
+    Returns:
+        Local file path if successful, None otherwise
+    """
+    if not TELEGRAM_TOKEN:
+        return None
+    
     try:
         meta = requests.get(
             f"{TELEGRAM_API}/getFile",
@@ -104,6 +187,7 @@ async def download_file(file_id: str, file_name: str, max_size: int = None) -> s
         
         # Check file size limit
         if max_size and file_size > max_size:
+            logger.warning(f"File {file_name} exceeds size limit: {file_size} > {max_size}")
             return None
 
         url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
@@ -116,6 +200,7 @@ async def download_file(file_id: str, file_name: str, max_size: int = None) -> s
             with open(local_path, "wb") as f:
                 f.write(content.content)
             
+            logger.info(f"Downloaded file: {local_path}")
             return local_path
         else:
             return None
@@ -127,9 +212,19 @@ async def download_file(file_id: str, file_name: str, max_size: int = None) -> s
 
 async def analyze_image_with_vision(image_path: str, chat_id: int) -> str | None:
     """
-    Analyze image using Groq's vision API to extract observations about the issue.
-    Returns analysis text describing what's visible in the image.
+    Analyze image using Groq's vision API.
+    
+    Args:
+        image_path: Path to local image file
+        chat_id: Telegram chat ID for logging
+        
+    Returns:
+        Analysis text or None if failed
     """
+    if not GROQ_API_KEY:
+        logger.warning("OpenAI API key not configured")
+        return None
+    
     try:
         # Read image and encode to base64
         with open(image_path, "rb") as f:
@@ -143,8 +238,8 @@ async def analyze_image_with_vision(image_path: str, chat_id: int) -> str | None
         # Create data URL for base64 image
         data_url = f"data:{mime_type};base64,{image_data}"
         
-        # Call vision API with proper image_url format
-        response = client.chat.completions.create(
+        # Call vision API
+        response = groq_client.chat.completions.create(
             model=VISION_MODEL,
             messages=[
                 {
@@ -181,20 +276,24 @@ Be specific and factual. Only describe what you see, don't speculate."""
         logger.error(f"[{chat_id}] Vision API failed: {e}")
         return None
 
+
 async def extract_info_from_image_analysis(chat_id: int, analysis_text: str, session) -> None:
     """
-    Extract structured information from image analysis using LLM with validation constraints.
-    Uses same constraints as text extraction to ensure consistency.
+    Extract structured information from image analysis.
+    
+    Args:
+        chat_id: Telegram chat ID
+        analysis_text: Image analysis from vision API
+        session: User session object
     """
-    if not analysis_text.strip():
+    if not analysis_text.strip() or not GROQ_API_KEY:
         return
     
     try:
-        # Get available options for constrained extraction
         available_options = _get_available_options()
         
-        # Use LLM to extract structured data from vision analysis with constraints
-        response = client.chat.completions.create(
+        # Use LLM to extract structured data from vision analysis
+        response = groq_client.chat.completions.create(
             model=MODEL,
             messages=[
                 {
@@ -234,7 +333,7 @@ If field not found, do NOT include it."""
         extracted_data = response.choices[0].message.content
         logger.info(f"[{chat_id}] Vision extraction output:\n{extracted_data}")
         
-        # Parse and apply extracted information with validation
+        # Parse and apply extracted information
         lines = extracted_data.split('\n')
         for line in lines:
             if not line.strip() or ':' not in line:
@@ -248,32 +347,22 @@ If field not found, do NOT include it."""
                 if not value:
                     continue
                 
-                # Software extraction - match against SUPPORTED_SOFTWARE
+                # Software extraction
                 if not session.software and 'software' in field:
                     value_lower = value.lower()
-                    matched = False
                     for keyword, software_name in SUPPORTED_SOFTWARE.items():
                         if keyword in value_lower:
                             try:
                                 session.software = software_name
                                 logger.info(f"[{chat_id}] Vision: Applied software = {software_name}")
-                                matched = True
                             except ValidationError as e:
                                 logger.warning(f"[{chat_id}] Vision: Failed to apply software: {e}")
                             break
-                    if not matched:
-                        # Try direct match
-                        try:
-                            session.software = value
-                            logger.info(f"[{chat_id}] Vision: Applied software = {value}")
-                        except ValidationError as e:
-                            logger.warning(f"[{chat_id}] Vision: Failed to apply software: {e}")
                 
-                # Environment extraction - exact match with valid options
+                # Environment extraction
                 elif not session.environment and 'environment' in field:
                     valid_envs = available_options['environments']
                     for env_option in valid_envs:
-                        # Exact match first
                         if value.lower() == env_option.lower():
                             try:
                                 session.environment = env_option
@@ -281,48 +370,30 @@ If field not found, do NOT include it."""
                             except ValidationError as e:
                                 logger.warning(f"[{chat_id}] Vision: Failed to apply environment: {e}")
                             break
-                        # Partial match as fallback
-                        elif value.lower() in env_option.lower() or env_option.lower() in value.lower():
-                            try:
-                                session.environment = env_option
-                                logger.info(f"[{chat_id}] Vision: Applied environment = {env_option}")
-                            except ValidationError as e:
-                                logger.warning(f"[{chat_id}] Vision: Failed to apply environment: {e}")
-                            break
                 
-                # Impact extraction - keyword mapping with logging
+                # Impact extraction
                 elif not session.impact and 'impact' in field:
-                    impact_set = False
-                    if any(kw in value.lower() for kw in ['completely', 'fully', 'blocked', 'unable', 'cannot']):
+                    if any(kw in value.lower() for kw in ['completely', 'fully', 'blocked', 'unable']):
                         try:
                             session.impact = "Completely blocked"
                             logger.info(f"[{chat_id}] Vision: Applied impact = Completely blocked")
-                            impact_set = True
                         except ValidationError as e:
                             logger.warning(f"[{chat_id}] Vision: Failed to apply impact: {e}")
-                    
                     elif any(kw in value.lower() for kw in ['partial', 'some']):
                         try:
                             session.impact = "Partially blocked"
                             logger.info(f"[{chat_id}] Vision: Applied impact = Partially blocked")
-                            impact_set = True
                         except ValidationError as e:
                             logger.warning(f"[{chat_id}] Vision: Failed to apply impact: {e}")
-                    
                     elif any(kw in value.lower() for kw in ['slow', 'sluggish', 'lag', 'usable']):
                         try:
                             session.impact = "Slow but usable"
                             logger.info(f"[{chat_id}] Vision: Applied impact = Slow but usable")
-                            impact_set = True
                         except ValidationError as e:
                             logger.warning(f"[{chat_id}] Vision: Failed to apply impact: {e}")
-                    
-                    if not impact_set:
-                        logger.warning(f"[{chat_id}] Vision: Could not map impact: {value}")
                 
-                # Issue description - from error field
+                # Issue description
                 elif not session.issue_description and 'error' in field and value:
-                    # Clean up error message - remove special chars but keep meaningful text
                     cleaned_value = ''.join(c if c.isalnum() or c in ' .-_:' else '' for c in value)
                     if cleaned_value.strip():
                         try:
@@ -339,12 +410,20 @@ If field not found, do NOT include it."""
     except Exception as e:
         logger.error(f"[{chat_id}] Info extraction from analysis failed: {e}")
 
+
 # ==================== DATA EXTRACTION ====================
 
 async def try_extract_field(chat_id: int, text: str, session) -> tuple[bool, str | None]:
     """
     Try to extract and save a single field from user input.
-    Returns: (success, field_name_saved)
+    
+    Args:
+        chat_id: Telegram chat ID
+        text: User input text
+        session: User session object
+        
+    Returns:
+        Tuple of (success, field_name_saved)
     """
     t = text.lower().strip()
     
@@ -362,7 +441,7 @@ async def try_extract_field(chat_id: int, text: str, session) -> tuple[bool, str
                 except ValidationError:
                     return False, None
     
-    # Impact level (check early, before issue description)
+    # Impact level
     if not session.impact:
         if any(w in t for w in ['completely', 'fully', 'fully blocked', 'unable to work', 'blocked']):
             try:
@@ -385,7 +464,7 @@ async def try_extract_field(chat_id: int, text: str, session) -> tuple[bool, str
             except ValidationError:
                 return False, None
     
-    # Issue description: longer text or contains issue keywords
+    # Issue description
     if not session.issue_description:
         issue_keywords = [
             'unable', "can't", 'cannot', 'problem', 'issue', 'error',
@@ -403,7 +482,7 @@ async def try_extract_field(chat_id: int, text: str, session) -> tuple[bool, str
             except ValidationError:
                 return False, None
     
-    # Name + Company: comma-separated format
+    # Name + Company
     if not session.user_name:
         parts = [p.strip() for p in text.split(",")]
         if len(parts) >= 2 and 2 < len(parts[0]) < 50 and 2 < len(parts[1]) < 100:
@@ -414,7 +493,7 @@ async def try_extract_field(chat_id: int, text: str, session) -> tuple[bool, str
             except ValidationError:
                 return False, None
     
-    # Just user name (short text, no keywords)
+    # Just user name
     if not session.user_name and 2 < len(text) < 50:
         is_issue = any(kw in t for kw in ['unable', 'problem', 'error', 'slow', 'blocked'])
         is_env = any(kw in t for kw in ['prod', 'test', 'local', 'uat'])
@@ -427,7 +506,7 @@ async def try_extract_field(chat_id: int, text: str, session) -> tuple[bool, str
             except ValidationError:
                 return False, None
     
-    # Company name (if we have name but not company)
+    # Company name
     if not session.company_name and session.user_name and 2 < len(text) < 100:
         try:
             session.company_name = text
@@ -455,22 +534,28 @@ async def try_extract_field(chat_id: int, text: str, session) -> tuple[bool, str
     
     return False, None
 
+
 async def generate_summary(session) -> str:
-    """Generate a clear summary of collected information with edit options."""
+    """
+    Generate summary of collected information.
+    
+    Args:
+        session: User session object
+        
+    Returns:
+        Formatted summary string
+    """
     summary = "📋 Here's what I've collected:\n\n"
     summary += f"1️⃣ Name: {session.user_name}\n"
     summary += f"2️⃣ Company: {session.company_name}\n"
     summary += f"3️⃣ Software: {session.software}\n"
     
-    # Environment: extract .value if it's an Enum
     env_display = session.environment.value if session.environment and isinstance(session.environment, Enum) else session.environment
     summary += f"4️⃣ Environment: {env_display}\n"
     
-    # Category: extract .value if it's an Enum
     cat_display = session.issue_category.value if session.issue_category and isinstance(session.issue_category, Enum) else session.issue_category
     summary += f"5️⃣ Category: {cat_display}\n"
     
-    # Impact: extract .value if it's an Enum
     impact_display = session.impact.value if session.impact and isinstance(session.impact, Enum) else session.impact
     summary += f"6️⃣ Impact: {impact_display}\n"
     
@@ -485,8 +570,17 @@ async def generate_summary(session) -> str:
 
 
 async def process_pre_confirmation_edit(chat_id: int, edit_request: str, session) -> str:
-    """Handle edit request - prompt for new value."""
-    # Map field numbers and names to session attributes
+    """
+    Handle edit request before ticket confirmation.
+    
+    Args:
+        chat_id: Telegram chat ID
+        edit_request: Edit field request
+        session: User session object
+        
+    Returns:
+        Response message
+    """
     field_map = {
         '1': ('user_name', 'Name'),
         '2': ('company_name', 'Company'),
@@ -505,12 +599,11 @@ async def process_pre_confirmation_edit(chat_id: int, edit_request: str, session
     }
     
     if edit_request not in field_map:
-        return "❌ Invalid field. Use 1-7 or field name (name, company, software, environment, category, impact, issue)"
+        return "❌ Invalid field. Use 1-7 or field name"
     
     attr_name, display_name = field_map[edit_request]
     current_value = getattr(session, attr_name, None)
     
-    # Store edit state in session
     session.edit_field_mode = True
     session.edit_field_name = attr_name
     session.edit_field_display = display_name
@@ -519,7 +612,17 @@ async def process_pre_confirmation_edit(chat_id: int, edit_request: str, session
 
 
 async def apply_pre_confirmation_edit(chat_id: int, new_value: str, session) -> str:
-    """Apply the edited value to the session field."""
+    """
+    Apply edited value to session.
+    
+    Args:
+        chat_id: Telegram chat ID
+        new_value: New field value
+        session: User session object
+        
+    Returns:
+        Response message
+    """
     if not hasattr(session, 'edit_field_name') or not session.edit_field_name:
         return "❌ No field in edit mode. Use 'edit 1-7' first."
     
@@ -527,7 +630,6 @@ async def apply_pre_confirmation_edit(chat_id: int, new_value: str, session) -> 
     display_name = session.edit_field_display
     
     try:
-        # Validate and apply the new value
         if attr_name == 'user_name':
             session.user_name = new_value
             validated_value = session.user_name
@@ -541,7 +643,6 @@ async def apply_pre_confirmation_edit(chat_id: int, new_value: str, session) -> 
             session.environment = new_value
             validated_value = session.environment.value if hasattr(session.environment, 'value') else session.environment
         elif attr_name == 'issue_category':
-            # Match category to enum
             category_matched = None
             for cat in IssueCategory:
                 if new_value.lower() in cat.value.lower():
@@ -549,7 +650,7 @@ async def apply_pre_confirmation_edit(chat_id: int, new_value: str, session) -> 
                     category_matched = cat.value
                     break
             if not category_matched:
-                return f"❌ Invalid category. Valid options: {', '.join([c.value for c in IssueCategory])}"
+                return f"❌ Invalid category."
             validated_value = category_matched
         elif attr_name == 'impact':
             session.impact = new_value
@@ -561,34 +662,40 @@ async def apply_pre_confirmation_edit(chat_id: int, new_value: str, session) -> 
         else:
             return f"❌ Unknown field: {attr_name}"
         
-        # Clear edit mode
         session.edit_field_mode = False
         session.edit_field_name = None
         session.edit_field_display = None
         
-        # Show updated summary
         summary = await generate_summary(session)
         return f"✅ {display_name} updated to: {validated_value}\n\n{summary}"
     
     except ValidationError as e:
-        return f"❌ Validation error: {str(e)}\n\nTry again with a valid value or type 'cancel' to skip."
+        return f"❌ Validation error: {str(e)}"
     except Exception as e:
         logger.error(f"[{chat_id}] Edit error: {e}")
-        return f"❌ Error updating field: {str(e)}"    """Apply the edited value to the session field."""
-    
+        return f"❌ Error updating field: {str(e)}"
+
+
 # ==================== LLM INTEGRATION ====================
 
 async def run_llm(chat_id: int, user_text: str) -> str:
     """
-    Run LLM conversation with validation and error handling.
-    - LLM guides the conversation and asks for questions
-    - System generates summary when all data complete
-    - Only create ticket when user confirms summary
+    Run LLM conversation for ticket intake.
+    
+    Args:
+        chat_id: Telegram chat ID
+        user_text: User message
+        
+    Returns:
+        LLM response message
     """
+    if not GROQ_API_KEY:
+        return "AI features not configured. Please contact administrator."
+    
     session = get_or_create_session(chat_id)
     history = conversation_state.get(chat_id, [])
     
-    # Silent field extraction (non-intrusive)
+    # Silent field extraction
     await try_extract_field(chat_id, user_text, session)
     
     # Get completeness status
@@ -596,20 +703,16 @@ async def run_llm(chat_id: int, user_text: str) -> str:
     all_collected = completeness['collected'] == completeness['total']
     
     # ========== STEP 1: SUMMARY ALREADY SHOWN ==========
-    # If summary was shown before, check for confirmation or edit requests
     if session.summary_shown and not session.ticket_created:
         user_lower = user_text.lower().strip()
         
-        # Check if in edit field mode (waiting for new value)
         if hasattr(session, 'edit_field_mode') and session.edit_field_mode:
             return await apply_pre_confirmation_edit(chat_id, user_text, session)
         
-        # Check for edit requests (e.g., "edit 2", "edit company")
         if user_lower.startswith('edit '):
             edit_request = user_lower[5:].strip()
             return await process_pre_confirmation_edit(chat_id, edit_request, session)
         
-        # Check for confirmation
         confirmation_keywords = ['yes', 'yep', 'y', 'confirm', 'ok', 'okey', 'correct', 'right', 'true', 'okay']
         user_says_yes = any(kw in user_lower for kw in confirmation_keywords)
         
@@ -624,7 +727,6 @@ async def run_llm(chat_id: int, user_text: str) -> str:
                     f"Our support team will review this and get back to you shortly."
                 )
                 
-                # Clean up session
                 clear_session(chat_id)
                 conversation_state.pop(chat_id, None)
                 
@@ -635,7 +737,6 @@ async def run_llm(chat_id: int, user_text: str) -> str:
                 send_message(chat_id, reply)
                 return reply
         else:
-            # User didn't confirm, show summary again
             summary = await generate_summary(session)
             return summary
     
@@ -646,7 +747,6 @@ async def run_llm(chat_id: int, user_text: str) -> str:
         return summary
     
     # ========== STEP 3: CONTINUE COLLECTING DATA VIA LLM ==========
-    # Build system context with session data and available options
     available_options = _get_available_options()
     session_data = await _get_session_data(chat_id=chat_id)
     
@@ -665,7 +765,7 @@ Attachments: {session_data.get('attachments_count', 0)} file(s)
 Collected: {completeness['collected']}/{completeness['total']} fields ({completeness['percentage']:.0f}%)
 Missing: {', '.join(completeness['missing_fields']) if completeness['missing_fields'] else 'None'}
 
-=== VALID OPTIONS (when needed) ===
+=== VALID OPTIONS ===
 Environments: {', '.join(available_options['environments'])}
 Impact Levels: {', '.join(available_options['impact_levels'])}
 Software: {', '.join(available_options['software'])}
@@ -687,7 +787,7 @@ Software: {', '.join(available_options['software'])}
     ]
     
     try:
-        resp = client.chat.completions.create(
+        resp = groq_client.chat.completions.create(
             model=MODEL,
             messages=messages,
             temperature=0.35,
@@ -700,25 +800,21 @@ Software: {', '.join(available_options['software'])}
         if not reply:
             reply = "Could you tell me a bit more about what you're experiencing?"
         
-        # FILTER: Detect and reject LLM-generated summaries
-        # If LLM tries to create a summary (bulleted lists, numbered lists, colon-separated values)
-        # reject it and ask the next question
+        # Filter LLM-generated summaries
         summary_indicators = [
             'issue category:', 'system and environment:', 'impact level:',
-            'here\'s', 'summary:', '1.', '2.', '3.',  # Common summary patterns
-            'got it', 'thanks', 'understood', 'correct?'  # Common confirmation patterns
+            'here\'s', 'summary:', '1.', '2.', '3.',
+            'got it', 'thanks', 'understood', 'correct?'
         ]
         
         is_summary_attempt = (
             any(indicator in reply.lower() for indicator in summary_indicators) and
-            ':' in reply  # Summaries often use field: value format
+            ':' in reply
         )
         
         if is_summary_attempt:
-            # LLM tried to create a summary - ignore it and ask next field
             logger.warning(f"[{chat_id}] LLM attempted to generate summary, filtering it out")
             
-            # Ask for the first missing field
             if completeness['missing_fields']:
                 next_field = completeness['missing_fields'][0]
                 question_map = {
@@ -741,12 +837,22 @@ Software: {', '.join(available_options['software'])}
         history
         + [{"role": "user", "content": user_text}]
         + [{"role": "assistant", "content": reply}]
-    )[-10:]  # Keep last 10 messages
+    )[-10:]
     
     return reply
 
+
 async def process_file_with_text(chat_id: int, file_path: str, file_name: str, text: str, session) -> None:
-    """Process file attachment along with accompanying text message."""
+    """
+    Process file attachment along with text message.
+    
+    Args:
+        chat_id: Telegram chat ID
+        file_path: Local file path
+        file_name: Original file name
+        text: Accompanying text
+        session: User session object
+    """
     file_ext = os.path.splitext(file_name)[1].lower()
     
     # Analyze image with vision if it's an image
@@ -759,158 +865,16 @@ async def process_file_with_text(chat_id: int, file_path: str, file_name: str, t
     if text and text.strip():
         await try_extract_field(chat_id, text, session)
 
-# ==================== TICKET EDITING ====================
 
-async def show_ticket_for_editing(chat_id: int, ticket_id: str) -> tuple[bool, str]:
-    """Load and display a ticket for editing."""
-    from ticket import load_ticket_by_id
-    
-    ticket_data = load_ticket_by_id(ticket_id)
-    if not ticket_data:
-        return False, f"❌ Ticket {ticket_id} not found. Please check the ticket ID."
-    
-    # Show ticket data with edit options
-    display = f"""📋 Ticket {ticket_id}
-    
-👤 Name: {ticket_data.get('user_name')}
-🏢 Company: {ticket_data.get('company_name')}
-⚙️  Software: {ticket_data.get('software')}
-🌍 Environment: {ticket_data.get('environment')}
-📌 Category: {ticket_data.get('issue_category')}
-⚠️  Impact: {ticket_data.get('impact')}
-📄 Issue: {ticket_data.get('issue_description')}
-
-Reply with field name and new value to edit:
-- name: <new name>
-- company: <new company>
-- software: <software name>
-- environment: <Production/Test/Local>
-- category: <category name>
-- impact: <impact level>
-- issue: <issue description>
-
-Or reply DONE when finished editing."""
-    
-    # Store ticket data in session for editing
-    session = get_or_create_session(chat_id)
-    session.edit_mode = True
-    session.edit_ticket_id = ticket_id
-    session.edit_ticket_data = ticket_data
-    
-    return True, display
-
-
-async def process_ticket_edit(chat_id: int, user_input: str, session) -> str:
-    """Process an edit command for a ticket."""
-    from ticket import update_ticket
-    
-    user_input = user_input.strip()
-    
-    # Check if editing is done
-    if user_input.lower() in ['done', 'finish', 'save']:
-        if hasattr(session, 'edit_mode') and session.edit_mode:
-            session.edit_mode = False
-            session.edit_ticket_id = None
-            session.edit_ticket_data = None
-            ticket_id = session.edit_ticket_id if hasattr(session, 'edit_ticket_id') else "Unknown"
-            reply = f"✅ Ticket updated successfully!"
-            return reply
-        else:
-            return "No ticket in edit mode."
-    
-    # Parse edit command: "field: value"
-    if ':' not in user_input:
-        return "Please use format: field: value (e.g., 'software: Teamcenter')"
-    
-    field_name, field_value = user_input.split(':', 1)
-    field_name = field_name.strip().lower()
-    field_value = field_value.strip()
-    
-    if not field_value:
-        return f"Field value cannot be empty."
-    
-    # Map field names to ticket data keys
-    field_mapping = {
-        'name': 'user_name',
-        'company': 'company_name',
-        'software': 'software',
-        'environment': 'environment',
-        'category': 'issue_category',
-        'impact': 'impact',
-        'issue': 'issue_description',
-    }
-    
-    if field_name not in field_mapping:
-        return f"❌ Unknown field: {field_name}. Available fields: {', '.join(field_mapping.keys())}"
-    
-    data_key = field_mapping[field_name]
-    
-    # Validate the field value based on field type
-    try:
-        # Create a temporary session to validate
-        temp_session = get_or_create_session(chat_id)
-        
-        if field_name == 'name':
-            temp_session.user_name = field_value
-            validated_value = temp_session.user_name
-        elif field_name == 'company':
-            temp_session.company_name = field_value
-            validated_value = temp_session.company_name
-        elif field_name == 'software':
-            temp_session.software = field_value
-            validated_value = temp_session.software
-        elif field_name == 'environment':
-            temp_session.environment = field_value
-            validated_value = temp_session.environment.value
-        elif field_name == 'category':
-            category_matched = None
-            for cat in IssueCategory:
-                if field_value.lower() in cat.value.lower():
-                    category_matched = cat.value
-                    break
-            if not category_matched:
-                return f"❌ Invalid category: {field_value}. Valid: {', '.join([c.value for c in IssueCategory])}"
-            validated_value = category_matched
-        elif field_name == 'impact':
-            temp_session.impact = field_value
-            validated_value = temp_session.impact.value
-        elif field_name == 'issue':
-            temp_session.issue_description = field_value
-            validated_value = temp_session.issue_description
-        
-    except ValidationError as e:
-        return f"❌ Validation error: {str(e)}"
-    
-    # Update the ticket
-    ticket_id = session.edit_ticket_id
-    update_data = {data_key: validated_value}
-    
-    if update_ticket(ticket_id, update_data):
-        # Update the local cache
-        session.edit_ticket_data[data_key] = validated_value
-        
-        # Show updated ticket state
-        summary = f"""✏️ Updated {field_name}: {validated_value}
-
-Current ticket state:
-👤 Name: {session.edit_ticket_data.get('user_name')}
-🏢 Company: {session.edit_ticket_data.get('company_name')}
-⚙️ Software: {session.edit_ticket_data.get('software')}
-🌍 Environment: {session.edit_ticket_data.get('environment')}
-📌 Category: {session.edit_ticket_data.get('issue_category')}
-⚠️ Impact: {session.edit_ticket_data.get('impact')}
-📄 Issue: {session.edit_ticket_data.get('issue_description')}
-
-Edit another field or reply DONE."""
-        return summary
-    else:
-        return f"❌ Failed to update ticket {ticket_id}. Please try again."
-
-# ==================== WEBHOOK ====================
+# ==================== TELEGRAM WEBHOOK ====================
 
 @app.post("/telegram/webhook")
 async def telegram_webhook(req: Request):
-    """Handle incoming Telegram webhook."""
+    """
+    Handle incoming Telegram webhook.
+    
+    Processes messages, files, and commands from Telegram bot.
+    """
     try:
         data = await req.json()
     except Exception as e:
@@ -926,67 +890,58 @@ async def telegram_webhook(req: Request):
     try:
         session = get_or_create_session(chat_id)
         
-        # Get text if present (works with or without attachments)
+        # Get text if present
         text = msg.get("text", "").strip() if "text" in msg else ""
         caption = msg.get("caption", "").strip() if "caption" in msg else ""
         user_input = text or caption
         
-        # File upload (document) - process silently, no custom message
+        # File upload (document)
         if "document" in msg:
             file_name = msg["document"].get("file_name", "document")
             path = await download_file(msg["document"]["file_id"], file_name, max_size=MAX_IMAGE_SIZE)
             if path:
                 session.attachments.append(path)
-                # Process file silently - extract data without custom response
                 await process_file_with_text(chat_id, path, file_name, user_input, session)
                 
-                # If there's accompanying text, let run_llm handle the response
                 if user_input:
                     reply = await run_llm(chat_id, user_input)
                     send_message(chat_id, reply)
-                # If no text, send acknowledgment only
                 else:
                     send_message(chat_id, "📎 Got the file. Please continue.")
             else:
                 send_message(chat_id, "❌ Failed to download file. File may be too large (max 5MB).")
             return {"ok": True}
         
-        # Photo upload - process silently, no custom message
+        # Photo upload
         if "photo" in msg:
             photo = msg["photo"][-1]
             path = await download_file(photo["file_id"], f"screenshot_{chat_id}_{len(session.attachments)}.jpg", max_size=MAX_IMAGE_SIZE)
             if path:
                 session.attachments.append(path)
-                # Process photo silently - extract data without custom response
                 await process_file_with_text(chat_id, path, f"screenshot.jpg", user_input, session)
                 
-                # If there's accompanying text, let run_llm handle the response
                 if user_input:
                     reply = await run_llm(chat_id, user_input)
                     send_message(chat_id, reply)
-                # If no caption, send acknowledgment only
                 else:
                     send_message(chat_id, "📸 Got the screenshot. Please continue.")
             else:
                 send_message(chat_id, "❌ Failed to download screenshot. File may be too large (max 5MB).")
             return {"ok": True}
         
-        # Video upload - process silently, no custom message
+        # Video upload
         if "video" in msg:
             video = msg["video"]
             video_name = f"video_{chat_id}_{len(session.attachments)}.mp4"
             path = await download_file(video["file_id"], video_name, max_size=MAX_VIDEO_SIZE)
             if path:
                 session.attachments.append(path)
-                # Process video silently - extract data without custom response
                 if user_input:
                     await try_extract_field(chat_id, user_input, session)
                 
-                # If there's accompanying text, let run_llm handle the response
                 if user_input:
                     reply = await run_llm(chat_id, user_input)
                     send_message(chat_id, reply)
-                # If no caption, send acknowledgment only
                 else:
                     send_message(chat_id, "🎥 Got the video. Please continue.")
             else:
@@ -1007,36 +962,22 @@ async def telegram_webhook(req: Request):
                 return {"ok": True}
             
             if user_input.lower().startswith("/edit "):
-                # Extract ticket ID
                 ticket_id = user_input[6:].strip().upper()
                 if not ticket_id:
                     send_message(chat_id, "Usage: /edit <ticket_id>")
                     return {"ok": True}
                 
-                success, message = await show_ticket_for_editing(chat_id, ticket_id)
-                send_message(chat_id, message)
+                # Show ticket for editing
+                send_message(chat_id, f"Edit feature coming in Phase 2 - editing ticket {ticket_id}")
                 return {"ok": True}
             
             if user_input.lower() == "/cancel":
                 clear_session(chat_id)
                 conversation_state.pop(chat_id, None)
-                session.edit_mode = False if hasattr(session, 'edit_mode') else False
                 send_message(chat_id, "Support request cancelled. Type /start to begin again.")
                 return {"ok": True}
             
-            # Check if in saved ticket edit mode (/edit <ticket_id>)
-            if hasattr(session, 'edit_mode') and session.edit_mode:
-                reply = await process_ticket_edit(chat_id, user_input, session)
-                send_message(chat_id, reply)
-                return {"ok": True}
-            
-            # Check if in pre-confirmation edit mode (new ticket edit before confirmation)
-            if hasattr(session, 'edit_field_mode') and session.edit_field_mode:
-                reply = await apply_pre_confirmation_edit(chat_id, user_input, session)
-                send_message(chat_id, reply)
-                return {"ok": True}
-            
-            # Regular message processing - uses generate_summary() template automatically
+            # Regular message processing
             reply = await run_llm(chat_id, user_input)
             send_message(chat_id, reply)
         
@@ -1047,24 +988,71 @@ async def telegram_webhook(req: Request):
         send_message(chat_id, "Sorry, something went wrong. Please try again.")
         return {"ok": False}
 
-# ==================== HEALTH CHECK ====================
+# ==================== STARTUP/SHUTDOWN ====================
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize database and test connection on startup"""
+    logger.info("🚀 Starting up Gatekeeper Support Platform...")
+    
+    # Test database connection
+    if not test_connection():
+        logger.error("❌ Failed to connect to database on startup!")
+        raise RuntimeError("Database connection failed")
+    
+    # Initialize database tables
+    if not init_db():
+        logger.error("❌ Failed to initialize database on startup!")
+        raise RuntimeError("Database initialization failed")
+    
+    logger.info("✅ Gatekeeper application started successfully")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup on shutdown"""
+    logger.info("🛑 Shutting down Gatekeeper Support Platform...")
+
+
+# ==================== HEALTH CHECKS ====================
 
 @app.get("/health")
-async def health():
-    """Health check endpoint."""
+async def health_check():
+    """
+    Health check endpoint.
+    
+    Returns service status and session statistics.
+    """
     from session import sessions
     return {
-        "status": "ok",
+        "status": "healthy",
+        "service": "Gatekeeper Support Platform",
+        "version": "2.0.0",
         "active_sessions": len(sessions),
-        "conversation_histories": len(conversation_state)
+        "conversation_histories": len(conversation_state),
+        "timestamp": datetime.utcnow().isoformat()
     }
+
 
 @app.get("/")
 async def root():
-    """Root endpoint."""
+    """Root endpoint - API information"""
     return {
-        "name": "Gatekeeper Support Intake System",
-        "version": "2.0",
+        "name": "Gatekeeper Support Platform",
+        "version": "2.0.0",
         "status": "running",
-        "features": ["Chat-based intake", "Vision AI analysis", "File uploads"]
+        "features": [
+            "Admin authentication (Phase 1)",
+            "Telegram bot intake (Phase 0)",
+            "Chat-based ticket creation",
+            "Vision AI image analysis",
+            "File uploads support",
+            "Semantic search (coming Phase 2)",
+            "WhatsApp integration (coming Phase 7)"
+        ],
+        "endpoints": {
+            "health": "/health",
+            "auth": "/api/admin/login",
+            "telegram": "/telegram/webhook"
+        }
     }
