@@ -4,7 +4,7 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useAuth } from "@/hooks/useAuth"
-import { BarChart3, Ticket, Settings, Home, Users, Shield } from "lucide-react"
+import { BarChart3, Ticket, Settings, Home, Users, Shield, Building2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 export default function Sidebar() {
@@ -18,6 +18,12 @@ export default function Sidebar() {
     ...(admin?.role === "admin" ? [{ name: "Admins", href: "/dashboard/admins", icon: Shield }] : []),
     { name: "Analytics", href: "/dashboard/analytics", icon: BarChart3 },
     { name: "Settings", href: "/dashboard/settings", icon: Settings },
+    ...(admin?.role === "admin" || admin?.role === "manager" ? [{
+      name: "Companies",
+      href: "/dashboard/companies",
+      label: "Companies",
+      icon: Building2
+    }] : []),
   ]
 
   return (

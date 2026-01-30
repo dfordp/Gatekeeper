@@ -25,7 +25,6 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 # Base class for models
 Base = declarative_base()
 
-# ==================== EXISTING MODELS (from /scripts) ====================
 
 class Company(Base):
     """Company model"""
@@ -61,9 +60,12 @@ class User(Base):
     tickets_assigned = relationship("Ticket", foreign_keys="Ticket.assigned_engineer_id", back_populates="assigned_engineer")
     ticket_events = relationship("TicketEvent", back_populates="actor_user")
     attachment_events = relationship("AttachmentEvent", back_populates="actor_user")
+    root_cause_analyses = relationship("RootCauseAnalysis", back_populates="created_by_user")
+    resolution_notes = relationship("ResolutionNote", back_populates="created_by_user")
     
     __table_args__ = (
         Index("idx_user_company", "company_id"),
+        Index("idx_user_email", "email"),
     )
     
     def __repr__(self):
@@ -71,25 +73,25 @@ class User(Base):
 
 
 class Ticket(Base):
-    """Support ticket model"""
+    """Support ticket model - complete with RCA and resolution notes"""
     __tablename__ = "ticket"
     
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    ticket_no = Column(String(50), nullable=False, unique=True)
-    status = Column(String(50), nullable=False, default="open")
+    ticket_no = Column(String(50), nullable=False, unique=True, index=True)
+    status = Column(String(50), nullable=False, default="open", index=True)
     level = Column(String(50), nullable=True)
     category = Column(String(100), nullable=True)
     subject = Column(String(500), nullable=False)
     summary = Column(Text, nullable=True)
     detailed_description = Column(Text, nullable=False)
-    company_id = Column(UUID(as_uuid=True), ForeignKey("company.id"), nullable=False)
+    company_id = Column(UUID(as_uuid=True), ForeignKey("company.id"), nullable=False, index=True)
     raised_by_user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=False)
     assigned_engineer_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=True)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     closed_at = Column(DateTime, nullable=True)
     reopened_at = Column(DateTime, nullable=True)
-    attachment_ids = Column(JSONB, nullable=True)  # Array of attachment UUIDs
+    attachment_ids = Column(JSONB, nullable=True, default=[])
     
     company = relationship("Company", back_populates="tickets")
     raised_by_user = relationship("User", foreign_keys=[raised_by_user_id], back_populates="tickets_raised")
@@ -97,6 +99,8 @@ class Ticket(Base):
     events = relationship("TicketEvent", back_populates="ticket", cascade="all, delete-orphan")
     attachments = relationship("Attachment", back_populates="ticket", cascade="all, delete-orphan")
     embeddings = relationship("Embedding", back_populates="ticket", cascade="all, delete-orphan")
+    root_cause_analysis = relationship("RootCauseAnalysis", uselist=False, back_populates="ticket", cascade="all, delete-orphan")
+    resolution_note = relationship("ResolutionNote", uselist=False, back_populates="ticket", cascade="all, delete-orphan")
     
     __table_args__ = (
         Index("idx_ticket_company", "company_id"),
@@ -109,15 +113,15 @@ class Ticket(Base):
 
 
 class TicketEvent(Base):
-    """Ticket event/action log model"""
+    """Ticket event/action log - tracks all changes to a ticket"""
     __tablename__ = "ticket_event"
     
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    ticket_id = Column(UUID(as_uuid=True), ForeignKey("ticket.id"), nullable=False)
+    ticket_id = Column(UUID(as_uuid=True), ForeignKey("ticket.id"), nullable=False, index=True)
     event_type = Column(String(50), nullable=False)
     actor_user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=False)
     payload = Column(JSONB, nullable=True)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
     
     ticket = relationship("Ticket", back_populates="events")
     actor_user = relationship("User", back_populates="ticket_events")
@@ -133,36 +137,41 @@ class TicketEvent(Base):
 
 
 class Attachment(Base):
-    """Attachment model"""
+    """Attachment model - files attached to tickets"""
     __tablename__ = "attachment"
     
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    ticket_id = Column(UUID(as_uuid=True), ForeignKey("ticket.id"), nullable=False)
+    ticket_id = Column(UUID(as_uuid=True), ForeignKey("ticket.id"), nullable=False, index=True)
     type = Column(String(50), nullable=False)
     file_path = Column(String(1000), nullable=False)
+    file_name = Column(String(255), nullable=False)
+    file_size = Column(Integer, nullable=True)
     mime_type = Column(String(100), nullable=True)
     cloudinary_url = Column(String(500), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_by_user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=True)
     
     ticket = relationship("Ticket", back_populates="attachments")
+    created_by_user = relationship("User", foreign_keys=[created_by_user_id])
     events = relationship("AttachmentEvent", back_populates="attachment", cascade="all, delete-orphan")
     embeddings = relationship("Embedding", back_populates="attachment", cascade="all, delete-orphan")
     
     __table_args__ = (
         Index("idx_attachment_ticket", "ticket_id"),
         Index("idx_attachment_type", "type"),
+        Index("idx_attachment_created_at", "created_at"),
     )
     
     def __repr__(self):
-        return f"<Attachment {self.id} {self.type}>"
+        return f"<Attachment {self.file_name}>"
 
 
 class AttachmentEvent(Base):
-    """Attachment event log model"""
+    """Attachment event log - tracks attachment changes"""
     __tablename__ = "attachment_event"
     
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    ticket_id = Column(UUID(as_uuid=True), ForeignKey("ticket.id"), nullable=False)
+    ticket_id = Column(UUID(as_uuid=True), ForeignKey("ticket.id"), nullable=False, index=True)
     attachment_id = Column(UUID(as_uuid=True), ForeignKey("attachment.id"), nullable=True)
     event_type = Column(String(50), nullable=False)
     actor_user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=False)
@@ -180,22 +189,75 @@ class AttachmentEvent(Base):
     )
     
     def __repr__(self):
-        return f"<AttachmentEvent {self.id} {self.event_type}>"
+        return f"<AttachmentEvent {self.id}>"
+
+
+class RootCauseAnalysis(Base):
+    """Root Cause Analysis model - added when resolving tickets"""
+    __tablename__ = "root_cause_analysis"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    ticket_id = Column(UUID(as_uuid=True), ForeignKey("ticket.id"), nullable=False, unique=True, index=True)
+    root_cause_description = Column(Text, nullable=False)
+    contributing_factors = Column(JSONB, nullable=True, default=[])
+    prevention_measures = Column(Text, nullable=True)
+    resolution_steps = Column(JSONB, nullable=True, default=[])
+    related_ticket_ids = Column(JSONB, nullable=True, default=[])
+    created_by_user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    ticket = relationship("Ticket", foreign_keys=[ticket_id], back_populates="root_cause_analysis")
+    created_by_user = relationship("User", foreign_keys=[created_by_user_id], back_populates="root_cause_analyses")
+    
+    __table_args__ = (
+        Index("idx_rca_ticket", "ticket_id"),
+        Index("idx_rca_created_at", "created_at"),
+    )
+    
+    def __repr__(self):
+        return f"<RootCauseAnalysis {self.ticket_id}>"
+
+
+class ResolutionNote(Base):
+    """Resolution Note model - final summary when closing tickets"""
+    __tablename__ = "resolution_note"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    ticket_id = Column(UUID(as_uuid=True), ForeignKey("ticket.id"), nullable=False, unique=True, index=True)
+    solution_description = Column(Text, nullable=False)
+    steps_taken = Column(JSONB, nullable=True, default=[])
+    resources_used = Column(JSONB, nullable=True, default=[])
+    follow_up_notes = Column(Text, nullable=True)
+    created_by_user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    ticket = relationship("Ticket", foreign_keys=[ticket_id], back_populates="resolution_note")
+    created_by_user = relationship("User", foreign_keys=[created_by_user_id], back_populates="resolution_notes")
+    
+    __table_args__ = (
+        Index("idx_resolution_note_ticket", "ticket_id"),
+        Index("idx_resolution_note_created_at", "created_at"),
+    )
+    
+    def __repr__(self):
+        return f"<ResolutionNote {self.ticket_id}>"
 
 
 class Embedding(Base):
-    """Embedding/vector model"""
+    """Embedding/vector model for semantic search"""
     __tablename__ = "embedding"
     
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    company_id = Column(UUID(as_uuid=True), ForeignKey("company.id"), nullable=False)
-    ticket_id = Column(UUID(as_uuid=True), ForeignKey("ticket.id"), nullable=False)
+    company_id = Column(UUID(as_uuid=True), ForeignKey("company.id"), nullable=False, index=True)
+    ticket_id = Column(UUID(as_uuid=True), ForeignKey("ticket.id"), nullable=False, index=True)
     attachment_id = Column(UUID(as_uuid=True), ForeignKey("attachment.id"), nullable=True)
     source_type = Column(String(50), nullable=False)
     chunk_index = Column(Integer, nullable=False, default=0)
     text_content = Column(Text, nullable=False)
     vector_id = Column(String(100), nullable=True)
-    is_active = Column(Boolean, nullable=False, default=True)
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     deprecated_at = Column(DateTime, nullable=True)
     deprecation_reason = Column(String(100), nullable=True)
@@ -213,10 +275,8 @@ class Embedding(Base):
     )
     
     def __repr__(self):
-        return f"<Embedding {self.id} {self.source_type}>"
+        return f"<Embedding {self.id}>"
 
-
-# ==================== ADMIN MODELS (Phase 1) ====================
 
 class AdminUser(Base):
     """Admin user model"""
@@ -226,7 +286,7 @@ class AdminUser(Base):
     email = Column(String(255), nullable=False, unique=True, index=True)
     password_hash = Column(String(255), nullable=False)
     full_name = Column(String(255), nullable=False)
-    role = Column(String(50), nullable=False)  # admin, manager, analyst
+    role = Column(String(50), nullable=False)
     is_active = Column(Boolean, default=True, index=True)
     company_id = Column(UUID(as_uuid=True), ForeignKey("company.id"), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
@@ -234,7 +294,8 @@ class AdminUser(Base):
     last_login = Column(DateTime, nullable=True)
     
     company = relationship("Company", back_populates="admin_users")
-    audit_logs = relationship("AdminAuditLog", back_populates="admin_user", cascade="all, delete-orphan")    
+    audit_logs = relationship("AdminAuditLog", back_populates="admin_user", cascade="all, delete-orphan")
+    
     def __repr__(self):
         return f"<AdminUser {self.email}>"
 
@@ -261,13 +322,12 @@ class AdminAuditLog(Base):
     )
     
     def __repr__(self):
-        return f"<AdminAuditLog {self.id} {self.action}>"
+        return f"<AdminAuditLog {self.action}>"
     
     @staticmethod
     def create(admin_user_id, action: str, resource: str = None, resource_id: str = None,
                changes: dict = None, ip_address: str = None, payload: dict = None):
         """Create an audit log entry"""
-        # Don't create audit logs with null admin_user_id
         if not admin_user_id:
             return None
         
@@ -292,13 +352,8 @@ class AdminAuditLog(Base):
             db.close()
 
 
-# ==================== DATABASE FUNCTIONS ====================
-
 def get_db() -> Session:
-    """
-    Dependency injection for FastAPI.
-    Yields a database session.
-    """
+    """Dependency injection for FastAPI"""
     db = SessionLocal()
     try:
         yield db
@@ -331,7 +386,7 @@ def test_connection():
     """Test database connectivity"""
     try:
         with engine.connect() as conn:
-            result = conn.execute(text("SELECT 1"))
+            conn.execute(text("SELECT 1"))
             logger.info("✓ Database connection successful")
             return True
     except Exception as e:

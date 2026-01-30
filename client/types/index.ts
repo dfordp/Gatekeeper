@@ -1,47 +1,40 @@
-// client/src/types/index.ts
-export interface Admin {
+// client/types/index.ts
+
+export interface TicketEvent {
   id: string
-  email: string
-  full_name: string
-  role: "admin" | "manager" | "analyst"
-  is_active: boolean
-  company_id?: string
-  last_login?: string
+  type: string
+  actor: string | null
+  payload: Record<string, unknown>
   created_at: string
 }
 
-export interface AuthResponse {
-  token: string
-  admin: Omit<Admin, "is_active" | "created_at" | "last_login">
+export interface TicketDetail {
+  id: string
+  ticket_no: string
+  subject: string
+  summary: string | null
+  detailed_description: string
+  status: "open" | "in_progress" | "resolved" | "closed" | "reopened"
+  category: string | null
+  level: string | null
+  company_id: string
+  company_name: string | null
+  created_by: string | null
+  created_by_id: string | null
+  assigned_to: string | null
+  assigned_to_id: string | null
+  created_at: string
+  updated_at: string
+  closed_at: string | null
+  reopened_at: string | null
+  attachment_ids: string[]
+  events: TicketEvent[]
 }
 
-export interface LoginCredentials {
+export interface User {
+  id: string
   email: string
-  password: string
-}
-
-export interface RegisterCredentials {
-  email: string
-  password: string
-  full_name: string
+  name: string
+  role: string
   company_id?: string
-  secret_key: string
-}
-
-export interface ChangePasswordRequest {
-  old_password: string
-  new_password: string
-}
-
-export interface ApiResponse<T> {
-  data?: T
-  error?: string
-  message?: string
-}
-
-export interface PaginationMeta {
-  page: number
-  per_page: number
-  total: number
-  total_pages: number
 }
