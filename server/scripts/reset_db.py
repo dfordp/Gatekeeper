@@ -1,94 +1,81 @@
 # server/scripts/reset_db.py
 """
-Database reset script - Drop all tables and recreate them
-
-WARNING: This will delete all data!
+Database reset script - Drop all tables and reinitialize
 
 Usage:
     python scripts/reset_db.py
-    
-    Or skip confirmation:
-    python scripts/reset_db.py --force
+
+This script will:
+1. Drop all existing tables
+2. Recreate all tables
+3. Create the default company "Future Tech Design"
+4. Create a super admin user
 """
 
 import os
 import sys
-import argparse
 from pathlib import Path
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.database import drop_all_tables, init_db, test_connection
+from core.database import drop_all_tables, test_connection
 from core.logger import get_logger
+
+# Import from init_db
+from init_db import initialize_database
 
 logger = get_logger(__name__)
 
 
-def reset_database(force: bool = False) -> bool:
+def reset_database() -> bool:
     """
-    Reset database - drop all tables and recreate them.
+    Reset database by dropping all tables and reinitializing.
     
-    Args:
-        force: If True, skip confirmation prompt
-        
     Returns:
         True if successful, False otherwise
     """
+    # Confirm with user
+    print("\n" + "=" * 60)
+    print("⚠️  WARNING: This will DELETE all data in the database!")
+    print("=" * 60)
+    
+    response = input("\nType 'yes' to confirm database reset: ").strip().lower()
+    
+    if response != "yes":
+        logger.info("Reset cancelled")
+        return False
+    
+    logger.info("Resetting database...")
+    
     # Test connection
-    logger.info("Testing database connection...")
     if not test_connection():
-        logger.error("❌ Cannot connect to database")
+        logger.error("Cannot connect to database")
         return False
     
-    # Confirm before resetting
-    if not force:
-        print("\n" + "="*60)
-        print("⚠️  WARNING: This will DELETE ALL DATA!")
-        print("="*60)
-        print("\nThis will:")
-        print("  1. Drop all existing tables")
-        print("  2. Create fresh tables")
-        print("\nAll data will be PERMANENTLY DELETED.")
-        print("Database: " + os.getenv("DATABASE_URL", "").split("@")[-1])
-        print("\nAre you sure?")
-        
-        response = input("\nType 'yes' to confirm, or press Enter to cancel: ").strip().lower()
-        
-        if response != "yes":
-            print("❌ Operation cancelled.")
-            return False
-    
-    # Drop tables
-    logger.info("🗑️  Dropping all tables...")
+    # Drop all tables
+    logger.info("Dropping all tables...")
     if not drop_all_tables():
-        logger.error("❌ Failed to drop tables")
+        logger.error("Failed to drop tables")
+        return False
+    logger.info("✓ All tables dropped")
+    
+    # Reinitialize
+    logger.info("\nReinitializing database...")
+    if not initialize_database():
+        logger.error("Failed to reinitialize database")
         return False
     
-    # Initialize tables
-    logger.info("📦 Creating fresh tables...")
-    if not init_db():
-        logger.error("❌ Failed to create tables")
-        return False
-    
-    logger.info("✅ Database reset successfully")
     return True
 
 
-def main():
-    """Main entry point"""
-    parser = argparse.ArgumentParser(description="Reset database (drop and recreate)")
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Skip confirmation prompt"
-    )
-    
-    args = parser.parse_args()
-    
-    success = reset_database(force=args.force)
-    sys.exit(0 if success else 1)
-
-
 if __name__ == "__main__":
-    main()
+    try:
+        success = reset_database()
+        sys.exit(0 if success else 1)
+    except KeyboardInterrupt:
+        logger.info("\n⚠️ Reset cancelled by user")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        sys.exit(1)

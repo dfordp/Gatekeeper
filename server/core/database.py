@@ -234,8 +234,7 @@ class AdminUser(Base):
     last_login = Column(DateTime, nullable=True)
     
     company = relationship("Company", back_populates="admin_users")
-    audit_logs = relationship("AdminAuditLog", back_populates="admin_user")
-    
+    audit_logs = relationship("AdminAuditLog", back_populates="admin_user", cascade="all, delete-orphan")    
     def __repr__(self):
         return f"<AdminUser {self.email}>"
 
@@ -268,6 +267,10 @@ class AdminAuditLog(Base):
     def create(admin_user_id, action: str, resource: str = None, resource_id: str = None,
                changes: dict = None, ip_address: str = None, payload: dict = None):
         """Create an audit log entry"""
+        # Don't create audit logs with null admin_user_id
+        if not admin_user_id:
+            return None
+        
         db = SessionLocal()
         try:
             log_entry = AdminAuditLog(

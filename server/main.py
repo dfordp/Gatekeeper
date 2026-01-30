@@ -38,7 +38,8 @@ from middleware.audit_middleware import audit_middleware
 # Routes
 from routes.auth_routes import router as auth_router
 from routes.dashboard_routes import router as dashboard_router
-
+from routes.user_routes import router as user_router
+from routes.admin_routes import router as admin_routes_router
 # Legacy session management (keeping for bot compatibility)
 from session import (
     IssueCategory,
@@ -116,6 +117,8 @@ register_error_handlers(app)
 # Authentication routes (Phase 1)
 app.include_router(auth_router)
 app.include_router(dashboard_router)
+app.include_router(user_router)
+app.include_router(admin_routes_router)
 # Legacy HTTP routes (existing bot)
 app.include_router(http_router)
 

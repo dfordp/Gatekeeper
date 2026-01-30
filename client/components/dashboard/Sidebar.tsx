@@ -3,15 +3,19 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { BarChart3, Ticket, Settings, Home } from "lucide-react"
+import { useAuth } from "@/hooks/useAuth"
+import { BarChart3, Ticket, Settings, Home, Users, Shield } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 export default function Sidebar() {
   const pathname = usePathname()
+  const { admin } = useAuth()
 
   const items = [
     { name: "Dashboard", href: "/dashboard", icon: Home },
     { name: "Tickets", href: "/dashboard/tickets", icon: Ticket },
+    { name: "Users", href: "/dashboard/users", icon: Users },
+    ...(admin?.role === "admin" ? [{ name: "Admins", href: "/dashboard/admins", icon: Shield }] : []),
     { name: "Analytics", href: "/dashboard/analytics", icon: BarChart3 },
     { name: "Settings", href: "/dashboard/settings", icon: Settings },
   ]

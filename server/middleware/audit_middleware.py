@@ -14,12 +14,13 @@ async def audit_middleware(request: Request, call_next):
     """
     Middleware to log admin actions to audit trail.
     Logs all POST, PATCH, DELETE requests from authenticated admins.
+    Note: Skips DELETE operations as they're already logged in service layer.
     """
     # Process request
     response = await call_next(request)
     
-    # Only log mutation operations
-    if request.method not in ["POST", "PATCH", "DELETE"]:
+    # Only log mutation operations (skip DELETE - handled in service layer)
+    if request.method not in ["POST", "PATCH"]:
         return response
     
     # Skip non-API routes
@@ -37,6 +38,8 @@ async def audit_middleware(request: Request, call_next):
             return response
         
         admin_id = payload.get("sub")
+        if not admin_id:
+            return response
         
         # Log to audit trail
         try:
