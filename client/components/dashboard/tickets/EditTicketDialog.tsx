@@ -135,19 +135,19 @@ export default function EditTicketDialog({
     setAttachments((prev) => prev.filter((att) => att.id !== id))
   }
 
-  const handleSave = async () => {
+    const handleSave = async () => {
     setError(null)
-
+  
     if (!subject.trim()) {
       setError("Subject is required")
       return
     }
-
+  
     if (!description.trim()) {
       setError("Description is required")
       return
     }
-
+  
     try {
       // Save basic ticket info
       await onSave({
@@ -157,7 +157,7 @@ export default function EditTicketDialog({
         category: category || undefined,
         level: level || undefined,
       })
-
+  
       // Add new attachments if any
       if (attachments.length > 0) {
         for (const attachment of attachments) {
@@ -192,47 +192,52 @@ export default function EditTicketDialog({
           }
         }
       }
-
+  
       // Add or update RCA if closed
       if (ticket.status === "closed" && rootCauseDescription.trim()) {
         try {
-          if (!ticket.rca) {
-            // Validate root cause description length
-            if (rootCauseDescription.trim().length < 10) {
-              setError("Root cause description must be at least 10 characters")
-              return
+          // Validate root cause description length
+          if (rootCauseDescription.trim().length < 10) {
+            setError("Root cause description must be at least 10 characters")
+            return
+          }
+  
+          if (currentUser?.id) {
+            const rcaRequest: AddRCARequest = {
+              root_cause_description: rootCauseDescription.trim(),
+              created_by_user_id: currentUser.id,
+              contributing_factors: contributingFactors.trim()
+                ? contributingFactors
+                    .split("\n")
+                    .map((f) => f.trim())
+                    .filter((f) => f.length > 0)
+                : undefined,
+              prevention_measures: preventionMeasures.trim() || undefined,
+              resolution_steps: resolutionSteps.trim()
+                ? resolutionSteps
+                    .split("\n")
+                    .map((s) => s.trim())
+                    .filter((s) => s.length > 0)
+                : undefined,
+              ticket_closed_at: closedAt ? new Date(closedAt).toISOString() : null,
             }
-            
-            // Create new RCA
-            if (currentUser?.id) {
-              const rcaRequest: AddRCARequest = {
-                root_cause_description: rootCauseDescription.trim(),
-                created_by_user_id: currentUser.id,
-                contributing_factors: contributingFactors.trim()
-                  ? contributingFactors
-                      .split("\n")
-                      .map((f) => f.trim())
-                      .filter((f) => f.length > 0)
-                  : undefined,
-                prevention_measures: preventionMeasures.trim() || undefined,
-                resolution_steps: resolutionSteps.trim()
-                  ? resolutionSteps
-                      .split("\n")
-                      .map((s) => s.trim())
-                      .filter((s) => s.length > 0)
-                  : undefined,
-                ticket_closed_at: closedAt ? new Date(closedAt).toISOString() : null,
-              }
-              await ticketService.addRCA(ticket.id, rcaRequest)
-            }
+  
+            // Always call addRCA - backend will update if exists, create if not
+            await ticketService.addRCA(ticket.id, rcaRequest)
           }
         } catch (err) {
-          console.error("Failed to add RCA:", err)
-          setError(err instanceof Error ? err.message : "Failed to add RCA")
+          console.error("Failed to add/update RCA:", err)
+          setError(err instanceof Error ? err.message : "Failed to add/update RCA")
         }
       }
-
+  
       setAttachments([])
+      
+      // Refresh ticket data before closing
+      if (fetchTicket) {
+        await fetchTicket()
+      }
+      
       onOpenChange(false)
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : "Failed to save ticket"
@@ -458,86 +463,76 @@ export default function EditTicketDialog({
             {/* RCA Tab - Only for closed tickets */}
             {ticket.status === "closed" && (
               <TabsContent value="rca" className="space-y-4">
-                {ticket.rca ? (
-                  <div className="p-4 bg-blue-50 rounded-lg mb-4">
-                    <p className="text-sm text-blue-900">
-                      RCA already exists for this ticket. You can view it in the RCA
-                      tab on the ticket detail page.
-                    </p>
-                  </div>
-                ) : (
-                  <>
-                    <div className="space-y-2">
-                      <Label htmlFor="closed-at" className="flex items-center gap-2">
-                        <Calendar className="h-4 w-4" />
-                        Ticket Closed Date
-                      </Label>
-                      <Input
-                        id="closed-at"
-                        type="datetime-local"
-                        value={closedAt}
-                        onChange={(e) => setClosedAt(e.target.value)}
-                        disabled={isLoading}
-                      />
-                    </div>
+                
+                <div className="space-y-2">
+                  <Label htmlFor="closed-at" className="flex items-center gap-2">
+                    <Calendar className="h-4 w-4" />
+                    Ticket Closed Date
+                  </Label>
+                  <Input
+                    id="closed-at"
+                    type="datetime-local"
+                    value={closedAt}
+                    onChange={(e) => setClosedAt(e.target.value)}
+                    disabled={isLoading}
+                  />
+                </div>
 
-                    <div className="space-y-2">
-                      <Label htmlFor="rca-description">
-                        Root Cause Description
-                      </Label>
-                      <Textarea
-                        id="rca-description"
-                        placeholder="Describe the root cause of the issue..."
-                        value={rootCauseDescription}
-                        onChange={(e) => setRootCauseDescription(e.target.value)}
-                        disabled={isLoading}
-                        rows={3}
-                      />
-                    </div>
+                <div className="space-y-2">
+                  <Label htmlFor="rca-description">
+                    Root Cause Description
+                  </Label>
+                  <Textarea
+                    id="rca-description"
+                    placeholder="Describe the root cause of the issue..."
+                    value={rootCauseDescription}
+                    onChange={(e) => setRootCauseDescription(e.target.value)}
+                    disabled={isLoading}
+                    rows={3}
+                  />
+                </div>
 
-                    <div className="space-y-2">
-                      <Label htmlFor="contributing-factors">
-                        Contributing Factors
-                      </Label>
-                      <Textarea
-                        id="contributing-factors"
-                        placeholder="List factors (one per line)..."
-                        value={contributingFactors}
-                        onChange={(e) => setContributingFactors(e.target.value)}
-                        disabled={isLoading}
-                        rows={2}
-                      />
-                    </div>
+                <div className="space-y-2">
+                  <Label htmlFor="contributing-factors">
+                    Contributing Factors
+                  </Label>
+                  <Textarea
+                    id="contributing-factors"
+                    placeholder="List factors (one per line)..."
+                    value={contributingFactors}
+                    onChange={(e) => setContributingFactors(e.target.value)}
+                    disabled={isLoading}
+                    rows={2}
+                  />
+                </div>
 
-                    <div className="space-y-2">
-                      <Label htmlFor="prevention-measures">
-                        Prevention Measures
-                      </Label>
-                      <Textarea
-                        id="prevention-measures"
-                        placeholder="What steps should be taken to prevent this in the future?..."
-                        value={preventionMeasures}
-                        onChange={(e) => setPreventionMeasures(e.target.value)}
-                        disabled={isLoading}
-                        rows={2}
-                      />
-                    </div>
+                <div className="space-y-2">
+                  <Label htmlFor="prevention-measures">
+                    Prevention Measures
+                  </Label>
+                  <Textarea
+                    id="prevention-measures"
+                    placeholder="What measures should prevent this in future?..."
+                    value={preventionMeasures}
+                    onChange={(e) => setPreventionMeasures(e.target.value)}
+                    disabled={isLoading}
+                    rows={2}
+                  />
+                </div>
 
-                    <div className="space-y-2">
-                      <Label htmlFor="resolution-steps">
-                        Resolution Steps Taken
-                      </Label>
-                      <Textarea
-                        id="resolution-steps"
-                        placeholder="List steps taken to resolve (one per line)..."
-                        value={resolutionSteps}
-                        onChange={(e) => setResolutionSteps(e.target.value)}
-                        disabled={isLoading}
-                        rows={2}
-                      />
-                    </div>
-                  </>
-                )}
+                <div className="space-y-2">
+                  <Label htmlFor="resolution-steps">
+                    Resolution Steps
+                  </Label>
+                  <Textarea
+                    id="resolution-steps"
+                    placeholder="List steps (one per line)..."
+                    value={resolutionSteps}
+                    onChange={(e) => setResolutionSteps(e.target.value)}
+                    disabled={isLoading}
+                    rows={2}
+                  />
+                </div>
               </TabsContent>
             )}
           </Tabs>

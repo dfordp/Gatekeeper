@@ -1,6 +1,7 @@
 # server/routes/dashboard_routes.py
 """Dashboard routes for ticket management and analytics"""
 from fastapi import APIRouter, HTTPException, Depends, Query
+from pydantic import BaseModel
 from middleware.auth_middleware import get_current_admin
 from services.ticket_service import TicketService
 from utils.exceptions import ValidationError, NotFoundError
@@ -10,6 +11,12 @@ logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/dashboard", tags=["Dashboard"])
 
+# Request models
+class UpdateStatusRequest(BaseModel):
+    status: str
+
+class AssignTicketRequest(BaseModel):
+    engineer_id: str
 
 @router.get("/tickets")
 async def get_tickets(
@@ -56,14 +63,14 @@ async def get_ticket(
 @router.put("/tickets/{ticket_id}/status")
 async def update_ticket_status(
     ticket_id: str,
-    status: str,
+    request: UpdateStatusRequest,
     admin_payload: dict = Depends(get_current_admin)
 ):
     """Update ticket status"""
     try:
         result = TicketService.update_ticket_status(
             ticket_id=ticket_id,
-            new_status=status,
+            new_status=request.status,
             admin_id=admin_payload.get("sub")
         )
         return result
@@ -79,14 +86,14 @@ async def update_ticket_status(
 @router.put("/tickets/{ticket_id}/assign")
 async def assign_ticket(
     ticket_id: str,
-    engineer_id: str,
+    request: AssignTicketRequest,
     admin_payload: dict = Depends(get_current_admin)
 ):
     """Assign ticket to engineer"""
     try:
         result = TicketService.assign_ticket(
             ticket_id=ticket_id,
-            engineer_id=engineer_id,
+            engineer_id=request.engineer_id,
             admin_id=admin_payload.get("sub")
         )
         return result
