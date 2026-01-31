@@ -65,6 +65,7 @@ export interface Ticket {
 }
 
 export interface TicketDetail extends Ticket {
+  rca: any
   summary?: string | null
   detailed_description: string
   created_by_id?: string | null
@@ -98,6 +99,7 @@ export interface CreateTicketRequest {
   created_at?: string
   ticket_no?: string
   status?: string
+  closed_at?: string | null
 }
 
 export interface AddAttachmentRequest {
@@ -117,6 +119,7 @@ export interface AddRCARequest {
   prevention_measures?: string
   resolution_steps?: string[]
   related_ticket_ids?: string[]
+  ticket_closed_at?: string | null
 }
 
 export interface AddResolutionNoteRequest {
@@ -227,4 +230,26 @@ export const ticketService = {
     )
     return response.data
   },
+
+  async deleteTicket(ticketId: string): Promise<{ message: string }> {
+  const response = await apiClient.delete<{ message: string }>(
+    `/api/tickets/${ticketId}`
+  )
+  return response.data
+},
+
+  async updateTicket(ticketId: string, data: {
+    subject?: string
+    summary?: string
+    detailed_description?: string
+    category?: string
+    level?: string
+  }): Promise<any> {
+    const response = await apiClient.put(
+      `/api/tickets/${ticketId}`,
+      data
+    )
+    return response.data
+  },
 }
+

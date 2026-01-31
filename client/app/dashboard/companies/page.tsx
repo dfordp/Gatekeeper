@@ -177,7 +177,11 @@ export default function CompaniesPage() {
         {!loading && companies.length > 0 ? (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {companies.map((company) => (
-              <Card key={company.id} className="hover:shadow-lg transition-shadow">
+              <Card 
+                key={company.id} 
+                className="cursor-pointer hover:shadow-lg transition-shadow"
+                onClick={() => router.push(`/dashboard/companies/${company.id}`)}
+                >
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2 text-lg">
                     <Building2 className="h-5 w-5 text-blue-600" />

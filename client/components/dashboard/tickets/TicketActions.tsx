@@ -65,8 +65,9 @@ export default function TicketActions({
   }
 
   const handleAssign = async (engineerId: string) => {
-    if (engineerId === (ticket.assigned_to_id || "")) return
-    await onAssign(engineerId)
+    const finalEngineerId = engineerId === "unassigned" ? "" : engineerId
+    if (finalEngineerId === (ticket.assigned_to_id || "")) return
+    await onAssign(finalEngineerId)
   }
 
   return (
@@ -109,7 +110,7 @@ export default function TicketActions({
             </div>
           ) : engineers.length > 0 ? (
             <Select
-              value={ticket.assigned_to_id || ""}
+              value={ticket.assigned_to_id || "unassigned"}
               onValueChange={handleAssign}
               disabled={isLoading}
             >
@@ -117,7 +118,7 @@ export default function TicketActions({
                 <SelectValue placeholder="Select engineer..." />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="">Unassigned</SelectItem>
+                <SelectItem value="unassigned">Unassigned</SelectItem>
                 {engineers.map((engineer) => (
                   <SelectItem key={engineer.id} value={engineer.id}>
                     {engineer.name}

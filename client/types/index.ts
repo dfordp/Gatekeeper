@@ -1,6 +1,7 @@
 // client/types/index.ts
 
 export interface TicketEvent {
+  actor_name: string
   id: string
   type: string
   actor: string | null

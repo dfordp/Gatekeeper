@@ -144,15 +144,10 @@ class Attachment(Base):
     ticket_id = Column(UUID(as_uuid=True), ForeignKey("ticket.id"), nullable=False, index=True)
     type = Column(String(50), nullable=False)
     file_path = Column(String(1000), nullable=False)
-    file_name = Column(String(255), nullable=False)
-    file_size = Column(Integer, nullable=True)
     mime_type = Column(String(100), nullable=True)
-    cloudinary_url = Column(String(500), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    created_by_user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=True)
     
     ticket = relationship("Ticket", back_populates="attachments")
-    created_by_user = relationship("User", foreign_keys=[created_by_user_id])
     events = relationship("AttachmentEvent", back_populates="attachment", cascade="all, delete-orphan")
     embeddings = relationship("Embedding", back_populates="attachment", cascade="all, delete-orphan")
     
@@ -163,7 +158,7 @@ class Attachment(Base):
     )
     
     def __repr__(self):
-        return f"<Attachment {self.file_name}>"
+        return f"<Attachment {self.file_path}>"
 
 
 class AttachmentEvent(Base):

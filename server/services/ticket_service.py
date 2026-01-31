@@ -96,9 +96,11 @@ class TicketService:
     
     @staticmethod
     def get_ticket_by_id(ticket_id: str) -> Dict[str, Any]:
-        """Get ticket details by ID"""
+        """Get ticket details by ID with attachments and RCA"""
         db = SessionLocal()
         try:
+            from core.database import Attachment, RootCauseAnalysis, ResolutionNote
+            
             ticket = db.query(Ticket).filter(Ticket.id == UUID(ticket_id)).first()
             if not ticket:
                 raise NotFoundError("Ticket not found")
@@ -119,6 +121,58 @@ class TicketService:
                 for e in events
             ]
             
+            # Get attachments
+            attachments = db.query(Attachment).filter(
+                Attachment.ticket_id == ticket.id
+            ).all()
+            
+            attachments_data = [
+                {
+                    "id": str(a.id),
+                    "type": a.type,
+                    "file_path": a.file_path,
+                    "mime_type": a.mime_type,
+                    "created_at": a.created_at.isoformat()
+                }
+                for a in attachments
+            ]
+            
+            # Get RCA if exists
+            rca = db.query(RootCauseAnalysis).filter(
+                RootCauseAnalysis.ticket_id == ticket.id
+            ).first()
+            
+            rca_data = None
+            if rca:
+                rca_data = {
+                    "id": str(rca.id),
+                    "root_cause_description": rca.root_cause_description,
+                    "contributing_factors": rca.contributing_factors,
+                    "prevention_measures": rca.prevention_measures,
+                    "resolution_steps": rca.resolution_steps,
+                    "related_ticket_ids": rca.related_ticket_ids,
+                    "created_by": rca.created_by_user.name if rca.created_by_user else None,
+                    "ticket_closed_at": ticket.closed_at.isoformat() if ticket.closed_at else None,
+                    "created_at": rca.created_at.isoformat()
+                }
+            
+            # Get resolution note if exists
+            resolution = db.query(ResolutionNote).filter(
+                ResolutionNote.ticket_id == ticket.id
+            ).first()
+            
+            resolution_data = None
+            if resolution:
+                resolution_data = {
+                    "id": str(resolution.id),
+                    "solution_description": resolution.solution_description,
+                    "steps_taken": resolution.steps_taken,
+                    "resources_used": resolution.resources_used,
+                    "follow_up_notes": resolution.follow_up_notes,
+                    "created_by": resolution.created_by_user.name if resolution.created_by_user else None,
+                    "created_at": resolution.created_at.isoformat()
+                }
+            
             return {
                 "id": str(ticket.id),
                 "ticket_no": ticket.ticket_no,
@@ -138,14 +192,16 @@ class TicketService:
                 "updated_at": ticket.updated_at.isoformat(),
                 "closed_at": ticket.closed_at.isoformat() if ticket.closed_at else None,
                 "reopened_at": ticket.reopened_at.isoformat() if ticket.reopened_at else None,
-                "attachment_ids": ticket.attachment_ids or [],
+                "attachments": attachments_data,
+                "rca": rca_data,
+                "resolution": resolution_data,
                 "events": events_data
             }
             
         except NotFoundError:
             raise
         except Exception as e:
-            logger.error(f"Failed to get ticket: {e}")
+            logger.error(f"Failed to get ticket: {e}", exc_info=True)
             raise ValidationError("Failed to retrieve ticket")
         finally:
             db.close()

@@ -5,15 +5,13 @@
 import { useAuth } from "@/hooks/useAuth"
 import DashboardLayout from "@/components/dashboard/DashboardLayout"
 import TicketDetail from "@/components/dashboard/tickets/TicketDetail"
-import { useRouter } from "next/navigation"
+import { useRouter, useParams } from "next/navigation"
 import { useEffect } from "react"
 
-export default function TicketDetailPage({
-  params,
-}: {
-  params: { id: string }
-}) {
+export default function TicketDetailPage() {
   const router = useRouter()
+  const params = useParams()
+  const ticketId = params?.id as string
   const { isAuthenticated, isLoading } = useAuth()
 
   useEffect(() => {
@@ -22,13 +20,13 @@ export default function TicketDetailPage({
     }
   }, [isAuthenticated, isLoading, router])
 
-  if (isLoading) {
+  if (isLoading || !ticketId) {
     return null
   }
 
   return (
     <DashboardLayout>
-      <TicketDetail ticketId={params.id} />
+      <TicketDetail ticketId={ticketId} />
     </DashboardLayout>
   )
 }

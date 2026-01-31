@@ -60,7 +60,7 @@ class UserService:
                 raise NotFoundError("Company not found")
             
             # Validate role
-            valid_roles = ["support_engineer", "manager", "supervisor"]
+            valid_roles = ["support_engineer", "manager", "supervisor","external"]
             if role not in valid_roles:
                 raise ValidationError(f"Invalid role. Must be one of: {', '.join(valid_roles)}")
             

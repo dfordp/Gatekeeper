@@ -48,12 +48,13 @@ export default function UsersPage() {
     try {
       setLoading(true)
       setError(null)
-      const data = await userService.getUsers()
-      setUsers(data.users || [])
+      const result = await userService.getUsers(undefined, undefined, 500)
+      // Filter out external users - only show internal support team
+      const internalUsers = result.users?.filter(u => u.role !== "external") || []
+      setUsers(internalUsers)
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to load users"
-      setError(message)
-      setUsers([])
+      const apiError = err as { response?: { data?: { detail?: string } } }
+      setError(apiError?.response?.data?.detail || "Failed to load users")
     } finally {
       setLoading(false)
     }

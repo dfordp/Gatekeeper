@@ -52,6 +52,7 @@ class AddRCARequest(BaseModel):
     prevention_measures: Optional[str] = Field(None, description="Prevention measures")
     resolution_steps: Optional[List[str]] = Field(None, description="Steps taken")
     related_ticket_ids: Optional[List[str]] = Field(None, description="Related ticket UUIDs")
+    ticket_closed_at: Optional[str] = Field(None, description="Ticket closed date (ISO format)")
 
 
 class AddResolutionNoteRequest(BaseModel):
@@ -62,6 +63,14 @@ class AddResolutionNoteRequest(BaseModel):
     resources_used: Optional[List[str]] = Field(None, description="Resources used")
     follow_up_notes: Optional[str] = Field(None, description="Follow-up notes")
 
+
+class UpdateTicketRequest(BaseModel):
+    """Request model for updating a ticket"""
+    subject: Optional[str] = Field(None, min_length=3, description="Ticket subject")
+    summary: Optional[str] = Field(None, description="Optional summary")
+    detailed_description: Optional[str] = Field(None, min_length=10, description="Full description")
+    category: Optional[str] = Field(None, description="Ticket category")
+    level: Optional[str] = Field(None, description="Priority level (level-1, level-2, level-3)")
 
 # ==================== ENDPOINTS ====================
 
@@ -113,14 +122,25 @@ async def create_ticket(
 @router.post("/{ticket_id}/upload-attachment")
 async def upload_attachment(
     ticket_id: str,
-    file: UploadFile = File(...),
-    admin_payload: dict = Depends(get_current_admin)
+    file: UploadFile = File(...)
 ):
     """
     Upload attachment file to ticket.
     File is saved locally, uploaded to Cloudinary, then deleted from local storage.
     """
     try:
+        from core.database import SessionLocal, Ticket
+        from uuid import UUID
+        
+        # Verify ticket exists first
+        db = SessionLocal()
+        try:
+            ticket = db.query(Ticket).filter(Ticket.id == UUID(ticket_id)).first()
+            if not ticket:
+                raise NotFoundError("Ticket not found")
+        finally:
+            db.close()
+        
         # Read file content
         content = await file.read()
         
@@ -130,31 +150,45 @@ async def upload_attachment(
         if not result.get("success"):
             raise HTTPException(status_code=400, detail=f"Upload failed: {result.get('error')}")
         
-        # Now create attachment record with Cloudinary URL
+        # Extract URLs - prefer Cloudinary, fallback to local path
+        cloudinary_url = result.get("cloudinary_url")
+        local_path = result.get("file_path")
+        
+        # Use Cloudinary URL if available, otherwise use local path
+        # If neither exists, something went wrong
+        if not cloudinary_url and not local_path:
+            raise HTTPException(status_code=500, detail="No file URL available after upload")
+        
+        storage_path = cloudinary_url if cloudinary_url else local_path
+        
+        logger.info(f"Attachment upload - cloudinary: {cloudinary_url}, local: {local_path}, using: {storage_path}")
+        
+        # Create attachment record
         attachment_result = TicketCreationService.add_attachment(
             ticket_id=ticket_id,
-            file_path=result.get("file_path"),
+            file_path=cloudinary_url,  # Store the URL we'll use for retrieval
             file_name=result.get("file_name"),
-            attachment_type="document",  # Can be determined by MIME type
+            attachment_type="document",
             mime_type=file.content_type,
             file_size=result.get("file_size"),
-            cloudinary_url=result.get("cloudinary_url"),
-            created_by_user_id=admin_payload.get("id"),
-            admin_id=admin_payload.get("id")
+            cloudinary_url=cloudinary_url,  # Store separately for reference
+            created_by_user_id=None,
+            admin_id=None
         )
         
         return attachment_result
         
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.error(f"Error uploading attachment: {e}")
-        raise HTTPException(status_code=500, detail="Failed to upload attachment")
+        raise HTTPException(status_code=500, detail=f"Failed to upload attachment: {str(e)}")
 
 
 @router.post("/{ticket_id}/attachments")
 async def add_attachment(
     ticket_id: str,
-    request: AddAttachmentRequest,
-    admin_payload: dict = Depends(get_current_admin)
+    request: AddAttachmentRequest
 ):
     """Add attachment to ticket"""
     try:
@@ -167,7 +201,7 @@ async def add_attachment(
             file_size=request.file_size,
             cloudinary_url=request.cloudinary_url,
             created_by_user_id=request.created_by_user_id,
-            admin_id=admin_payload.get("sub")
+            admin_id=None
         )
         return result
     except ValidationError as e:
@@ -182,11 +216,13 @@ async def add_attachment(
 @router.post("/{ticket_id}/rca")
 async def add_rca(
     ticket_id: str,
-    request: AddRCARequest,
-    admin_payload: dict = Depends(get_current_admin)
+    request: AddRCARequest
 ):
     """Add Root Cause Analysis to ticket"""
     try:
+        logger.info(f"RCA endpoint called: ticket_id={ticket_id}")
+        logger.info(f"RCA request data: {request.dict()}")
+        
         result = TicketCreationService.add_root_cause_analysis(
             ticket_id=ticket_id,
             root_cause_description=request.root_cause_description,
@@ -195,18 +231,23 @@ async def add_rca(
             prevention_measures=request.prevention_measures,
             resolution_steps=request.resolution_steps,
             related_ticket_ids=request.related_ticket_ids,
-            admin_id=admin_payload.get("sub")
+            ticket_closed_at=request.ticket_closed_at,
+            admin_id=None
         )
+        logger.info(f"✓ RCA endpoint success: {result}")
         return result
     except ValidationError as e:
+        logger.error(f"ValidationError in RCA: {e}")
         raise HTTPException(status_code=400, detail=str(e))
     except NotFoundError as e:
+        logger.error(f"NotFoundError in RCA: {e}")
         raise HTTPException(status_code=404, detail=str(e))
     except ConflictError as e:
+        logger.error(f"ConflictError in RCA: {e}")
         raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
-        logger.error(f"Error adding RCA: {e}")
-        raise HTTPException(status_code=500, detail="Failed to add RCA")
+        logger.error(f"Unexpected error in RCA endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to add RCA: {str(e)}")
 
 
 @router.post("/{ticket_id}/resolution")
@@ -236,3 +277,127 @@ async def add_resolution_note(
     except Exception as e:
         logger.error(f"Error adding resolution note: {e}")
         raise HTTPException(status_code=500, detail="Failed to add resolution note")
+
+@router.delete("/{ticket_id}")
+async def delete_ticket(
+    ticket_id: str,
+    admin_payload: dict = Depends(get_current_admin)
+):
+    """Delete a ticket"""
+    try:
+        result = TicketCreationService.delete_ticket(
+            ticket_id=ticket_id,
+            admin_id=admin_payload.get("id")
+        )
+        return result
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error deleting ticket: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete ticket")
+
+
+@router.put("/{ticket_id}")
+async def update_ticket(
+    ticket_id: str,
+    request: UpdateTicketRequest,
+    admin_payload: dict = Depends(get_current_admin)
+):
+    """Update ticket details"""
+    try:
+        result = TicketCreationService.update_ticket(
+            ticket_id=ticket_id,
+            subject=request.subject,
+            summary=request.summary,
+            detailed_description=request.detailed_description,
+            category=request.category,
+            level=request.level,
+            admin_id=admin_payload.get("id")
+        )
+        return result
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error updating ticket: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update ticket")
+
+@router.get("/{ticket_id}/attachments/{attachment_id}/download")
+async def download_attachment(
+    ticket_id: str,
+    attachment_id: str
+):
+    """Download attachment file - supports local files and Cloudinary URLs"""
+    try:
+        from core.database import SessionLocal, Attachment, Ticket
+        from uuid import UUID
+        import os
+        from fastapi.responses import FileResponse, RedirectResponse
+        
+        db = SessionLocal()
+        
+        try:
+            # Verify ticket exists
+            ticket = db.query(Ticket).filter(Ticket.id == UUID(ticket_id)).first()
+            if not ticket:
+                raise NotFoundError("Ticket not found")
+            
+            # Get attachment
+            attachment = db.query(Attachment).filter(
+                Attachment.id == UUID(attachment_id),
+                Attachment.ticket_id == UUID(ticket_id)
+            ).first()
+            
+            if not attachment:
+                raise NotFoundError("Attachment not found")
+            
+            file_path = attachment.file_path
+            
+            # If it's a Cloudinary URL or other remote URL, redirect to it
+            if file_path.startswith('http'):
+                return RedirectResponse(url=file_path, status_code=307)
+            
+            # If it's a local file
+            if os.path.exists(file_path):
+                return FileResponse(
+                    path=file_path,
+                    filename=file_path.split(os.sep)[-1] or file_path.split('/')[-1],
+                    media_type=attachment.mime_type or 'application/octet-stream'
+                )
+            
+            # If neither remote nor local exists
+            raise NotFoundError("File not found")
+            
+        finally:
+            db.close()
+            
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error downloading attachment: {e}")
+        raise HTTPException(status_code=500, detail="Failed to download attachment")
+
+@router.delete("/{ticket_id}/attachments/{attachment_id}")
+async def delete_attachment(
+    ticket_id: str,
+    attachment_id: str
+):
+    """Delete attachment from ticket"""
+    try:
+        logger.info(f"Delete request: ticket_id={ticket_id}, attachment_id={attachment_id}")
+        result = TicketCreationService.delete_attachment(
+            ticket_id=ticket_id,
+            attachment_id=attachment_id
+        )
+        logger.info(f"✓ Delete successful: {result}")
+        return result
+    except NotFoundError as e:
+        logger.warning(f"NotFound: {str(e)}")
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValidationError as e:
+        logger.warning(f"Validation error: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error deleting attachment: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to delete attachment: {str(e)}")
