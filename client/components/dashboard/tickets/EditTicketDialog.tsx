@@ -5,7 +5,7 @@
 import { useState, useRef } from "react"
 import { useAuth } from "@/hooks/useAuth"
 import { TicketDetail } from "@/services/ticket.service"
-import { ticketService, AddAttachmentRequest, AddRCARequest } from "@/services/ticket.service"
+import { ticketService, AddRCARequest } from "@/services/ticket.service"
 import {
   Dialog,
   DialogContent,
@@ -31,7 +31,7 @@ import {
   TabsList,
   TabsTrigger,
 } from "@/components/ui/tabs"
-import { Loader2, AlertCircle, Calendar, Trash2, Plus } from "lucide-react"
+import { Loader2, AlertCircle, Calendar, Trash2, Plus, FileUp } from "lucide-react"
 
 interface EditTicketDialogProps {
   open: boolean
@@ -44,7 +44,7 @@ interface EditTicketDialogProps {
     category?: string
     level?: string
   }) => Promise<void>
-  fetchTicket?: () => Promise<void>  // Add this
+  fetchTicket?: () => Promise<void>
   isLoading: boolean
 }
 
@@ -55,9 +55,9 @@ interface AttachmentFile {
 }
 
 const PRIORITY_LEVELS = [
-  { value: "level-1", label: "Level 1" },
-  { value: "level-2", label: "Level 2" },
-  { value: "level-3", label: "Level 3" },
+  { value: "level-1", label: "Level 1 - Critical" },
+  { value: "level-2", label: "Level 2 - High" },
+  { value: "level-3", label: "Level 3 - Medium" },
 ]
 
 const CATEGORIES = [
@@ -80,7 +80,6 @@ export default function EditTicketDialog({
   fetchTicket,
   isLoading,
 }: EditTicketDialogProps) {
-  // Get current user from auth
   const { admin: currentUser } = useAuth()
 
   // Form state
@@ -91,8 +90,8 @@ export default function EditTicketDialog({
   const [category, setCategory] = useState(ticket.category || "")
   const [level, setLevel] = useState(ticket.level || "")
 
-  // Attachment state
-  const [attachments, setAttachments] = useState<AttachmentFile[]>([])
+  // Ticket attachments state
+  const [newAttachments, setNewAttachments] = useState<AttachmentFile[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // RCA state
@@ -108,14 +107,17 @@ export default function EditTicketDialog({
   const [resolutionSteps, setResolutionSteps] = useState<string>(
     ticket.rca?.resolution_steps?.join("\n") || ""
   )
+
+  const [rcaAttachments, setRcaAttachments] = useState<AttachmentFile[]>([])
   const [closedAt, setClosedAt] = useState(
-    ticket.rca?.ticket_closed_at
-      ? new Date(ticket.rca.ticket_closed_at).toISOString().slice(0, 16)
-      : ticket.closed_at
+    ticket.closed_at
       ? new Date(ticket.closed_at).toISOString().slice(0, 16)
       : ""
   )
 
+  const rcaFileInputRef = useRef<HTMLInputElement>(null)
+
+  // Handlers for ticket attachments
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files
     if (!files) return
@@ -123,7 +125,7 @@ export default function EditTicketDialog({
     for (let i = 0; i < files.length; i++) {
       const file = files[i]
       const id = Math.random().toString(36).substring(2, 11)
-      setAttachments((prev) => [...prev, { id, name: file.name, file }])
+      setNewAttachments((prev) => [...prev, { id, name: file.name, file }])
     }
 
     if (fileInputRef.current) {
@@ -131,23 +133,160 @@ export default function EditTicketDialog({
     }
   }
 
-  const removeAttachment = (id: string) => {
-    setAttachments((prev) => prev.filter((att) => att.id !== id))
+  const removeNewAttachment = (id: string) => {
+    setNewAttachments((prev) => prev.filter((att) => att.id !== id))
   }
 
-    const handleSave = async () => {
+  // Handlers for RCA attachments
+  const handleRcaFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.currentTarget.files
+    if (!files) return
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i]
+      const id = Math.random().toString(36).substring(2, 11)
+      setRcaAttachments((prev) => [...prev, { id, name: file.name, file }])
+    }
+
+    if (rcaFileInputRef.current) {
+      rcaFileInputRef.current.value = ""
+    }
+  }
+
+  const removeRcaAttachment = (id: string) => {
+    setRcaAttachments((prev) => prev.filter((att) => att.id !== id))
+  }
+
+  // Delete existing ticket attachment
+  const handleDeleteAttachment = async (attachmentId: string) => {
+    try {
+      const token = localStorage.getItem("auth_token")
+      if (!token) {
+        throw new Error("Not authenticated. Please log in again.")
+      }
+
+      const response = await fetch(
+        `/api/tickets/${ticket.id}/attachments/${attachmentId}`,
+        {
+          method: "DELETE",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      )
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}))
+        throw new Error(
+          errorData.detail || `Delete failed with status ${response.status}`
+        )
+      }
+
+      if (fetchTicket) {
+        await fetchTicket()
+      }
+      console.log(`✓ Attachment deleted`)
+    } catch (err) {
+      console.error(`Failed to delete attachment:`, err)
+      setError(
+        `Failed to delete attachment: ${
+          err instanceof Error ? err.message : "Unknown error"
+        }`
+      )
+    }
+  }
+
+  // Upload new ticket attachments
+  const uploadTicketAttachments = async (): Promise<void> => {
+    if (newAttachments.length === 0) return
+
+    for (const attachment of newAttachments) {
+      try {
+        const formData = new FormData()
+        formData.append("file", attachment.file)
+
+        const token = localStorage.getItem("auth_token")
+
+        const response = await fetch(
+          `/api/tickets/${ticket.id}/upload-attachment`,
+          {
+            method: "POST",
+            body: formData,
+            headers: {
+              ...(token && { Authorization: `Bearer ${token}` }),
+            },
+          }
+        )
+
+        if (!response.ok) {
+          const error = await response.json()
+          throw new Error(error.detail || "Failed to upload attachment")
+        }
+
+        console.log(`✓ Attachment uploaded: ${attachment.name}`)
+      } catch (err) {
+        console.error(`Failed to upload attachment ${attachment.name}:`, err)
+        throw new Error(
+          `Failed to upload ${attachment.name}: ${
+            err instanceof Error ? err.message : "Unknown error"
+          }`
+        )
+      }
+    }
+  }
+
+  // Upload RCA attachments
+  const uploadRcaAttachments = async (): Promise<string[]> => {
+    const uploadedPaths: string[] = []
+
+    for (const attachment of rcaAttachments) {
+      try {
+        const formData = new FormData()
+        formData.append("file", attachment.file)
+
+        const token = localStorage.getItem("auth_token")
+
+        // Use a separate endpoint for RCA attachments
+        const response = await fetch(
+          `/api/tickets/${ticket.id}/upload-rca-attachment`,
+          {
+            method: "POST",
+            body: formData,
+            headers: {
+              ...(token && { Authorization: `Bearer ${token}` }),
+            },
+          }
+        )
+
+        if (!response.ok) {
+          console.warn(`Failed to upload RCA attachment ${attachment.name}`)
+        } else {
+          const data = await response.json()
+          uploadedPaths.push(data.file_path || attachment.name)
+          console.log(`✓ RCA Attachment uploaded: ${attachment.name}`)
+        }
+      } catch (err) {
+        console.error(`Failed to upload RCA attachment ${attachment.name}:`, err)
+      }
+    }
+
+    return uploadedPaths
+  }
+
+  // Main save handler
+  const handleSave = async () => {
     setError(null)
-  
+
     if (!subject.trim()) {
       setError("Subject is required")
       return
     }
-  
+
     if (!description.trim()) {
       setError("Description is required")
       return
     }
-  
+
     try {
       // Save basic ticket info
       await onSave({
@@ -157,88 +296,55 @@ export default function EditTicketDialog({
         category: category || undefined,
         level: level || undefined,
       })
-  
-      // Add new attachments if any
-      if (attachments.length > 0) {
-        for (const attachment of attachments) {
-          try {
-            const formData = new FormData()
-            formData.append('file', attachment.file)
-            
-            // Get auth token from localStorage
-            const token = localStorage.getItem('auth_token')
-            
-            const response = await fetch(
-              `/api/tickets/${ticket.id}/upload-attachment`,
-              {
-                method: 'POST',
-                body: formData,
-                headers: {
-                  ...(token && { 'Authorization': `Bearer ${token}` }),
-                },
-              }
-            )
-            
-            if (!response.ok) {
-              const error = await response.json()
-              throw new Error(error.detail || 'Failed to upload attachment')
-            }
-            
-            const result = await response.json()
-            console.log(`✓ Attachment uploaded: ${attachment.name}`)
-          } catch (err) {
-            console.error(`Failed to upload attachment ${attachment.name}:`, err)
-            setError(`Failed to upload ${attachment.name}: ${err instanceof Error ? err.message : 'Unknown error'}`)
-          }
-        }
+
+      // Upload ticket attachments
+      if (newAttachments.length > 0) {
+        await uploadTicketAttachments()
       }
-  
-      // Add or update RCA if closed
-      if (ticket.status === "closed" && rootCauseDescription.trim()) {
-        try {
-          // Validate root cause description length
-          if (rootCauseDescription.trim().length < 10) {
-            setError("Root cause description must be at least 10 characters")
-            return
-          }
-  
-          if (currentUser?.id) {
-            const rcaRequest: AddRCARequest = {
-              root_cause_description: rootCauseDescription.trim(),
-              created_by_user_id: currentUser.id,
-              contributing_factors: contributingFactors.trim()
-                ? contributingFactors
-                    .split("\n")
-                    .map((f) => f.trim())
-                    .filter((f) => f.length > 0)
-                : undefined,
-              prevention_measures: preventionMeasures.trim() || undefined,
-              resolution_steps: resolutionSteps.trim()
-                ? resolutionSteps
-                    .split("\n")
-                    .map((s) => s.trim())
-                    .filter((s) => s.length > 0)
-                : undefined,
-              ticket_closed_at: closedAt ? new Date(closedAt).toISOString() : null,
-            }
-  
-            // Always call addRCA - backend will update if exists, create if not
-            await ticketService.addRCA(ticket.id, rcaRequest)
-          }
-        } catch (err) {
-          console.error("Failed to add/update RCA:", err)
-          setError(err instanceof Error ? err.message : "Failed to add/update RCA")
-        }
+    // Add or update RCA if closed
+    if (ticket.status === "closed" && rootCauseDescription.trim()) {
+      if (rootCauseDescription.trim().length < 10) {
+        setError("Root cause description must be at least 10 characters")
+        return
       }
-  
-      setAttachments([])
-      
-      // Refresh ticket data before closing
-      if (fetchTicket) {
-        await fetchTicket()
+
+      if (currentUser?.id) {
+        // Upload RCA attachments first
+        const uploadedRcaPaths = await uploadRcaAttachments()
+
+        // Pass uploaded paths to RCA creation
+        // Use root_cause (not root_cause_description) for the API
+        await ticketService.createRCA(ticket.id, {
+          root_cause: rootCauseDescription.trim(),
+          contributing_factors: contributingFactors.trim()
+            ? contributingFactors
+                .split("\n")
+                .map((f) => f.trim())
+                .filter((f) => f.length > 0)
+            : undefined,
+          prevention_measures: preventionMeasures.trim() || undefined,
+          resolution_steps: resolutionSteps.trim()
+            ? resolutionSteps
+                .split("\n")
+                .map((s) => s.trim())
+                .filter((s) => s.length > 0)
+            : undefined,
+          rca_attachments: uploadedRcaPaths,
+        })
+
+        setNewAttachments([])
+        setRcaAttachments([])
       }
-      
-      onOpenChange(false)
+    } else {
+      setNewAttachments([])
+    }
+
+    // Refresh ticket data before closing
+    if (fetchTicket) {
+      await fetchTicket()
+    }
+
+    onOpenChange(false)
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : "Failed to save ticket"
       const apiError = err as { response?: { data?: { detail?: string } } }
@@ -246,38 +352,46 @@ export default function EditTicketDialog({
     }
   }
 
-    const handleDeleteAttachment = async (attachmentId: string) => {
-      try {
-        const token = localStorage.getItem('auth_token')
-        if (!token) {
-          throw new Error('Not authenticated. Please log in again.')
-        }
-        
-        const response = await fetch(
-          `/api/tickets/${ticket.id}/attachments/${attachmentId}`,
-          {
-            method: 'DELETE',
-            headers: {
-              'Authorization': `Bearer ${token}`,
-            },
-          }
-        )
-        
-        if (!response.ok) {
-          const errorData = await response.json().catch(() => ({}))
-          throw new Error(errorData.detail || `Delete failed with status ${response.status}`)
-        }
-        
-        // Refresh ticket data after successful deletion
-        if (fetchTicket) {
-          await fetchTicket()
-        }
-        console.log(`✓ Attachment deleted`)
-      } catch (err) {
-        console.error(`Failed to delete attachment:`, err)
-        setError(`Failed to delete attachment: ${err instanceof Error ? err.message : 'Unknown error'}`)
+
+  // Delete existing RCA attachment
+  const handleDeleteRcaAttachment = async (attachmentId: string) => {
+    try {
+      const token = localStorage.getItem("auth_token")
+      if (!token) {
+        throw new Error("Not authenticated. Please log in again.")
       }
+
+      const response = await fetch(
+        `/api/tickets/${ticket.id}/rca-attachments/${attachmentId}`,
+        {
+          method: "DELETE",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      )
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}))
+        throw new Error(
+          errorData.detail || `Delete failed with status ${response.status}`
+        )
+      }
+
+      if (fetchTicket) {
+        await fetchTicket()
+      }
+      console.log(`✓ RCA Attachment deleted`)
+    } catch (err) {
+      console.error(`Failed to delete RCA attachment:`, err)
+      setError(
+        `Failed to delete RCA attachment: ${
+          err instanceof Error ? err.message : "Unknown error"
+        }`
+      )
     }
+  }
+
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -285,7 +399,7 @@ export default function EditTicketDialog({
         <DialogHeader>
           <DialogTitle>Edit Ticket</DialogTitle>
           <DialogDescription>
-            Update ticket information, add attachments, or add RCA for closed tickets
+            Update ticket information, add attachments, or manage RCA for closed tickets
           </DialogDescription>
         </DialogHeader>
 
@@ -298,7 +412,7 @@ export default function EditTicketDialog({
           )}
 
           <Tabs defaultValue="details" className="w-full">
-            <TabsList className="grid w-full grid-cols-3">
+            <TabsList className="grid w-full gap-0" style={{ gridTemplateColumns: `repeat(${ticket.status === "closed" ? 3 : 2}, 1fr)` }}>
               <TabsTrigger value="details">Details</TabsTrigger>
               <TabsTrigger value="attachments">Attachments</TabsTrigger>
               {ticket.status === "closed" && (
@@ -307,7 +421,7 @@ export default function EditTicketDialog({
             </TabsList>
 
             {/* Details Tab */}
-            <TabsContent value="details" className="space-y-4">
+            <TabsContent value="details" className="space-y-4 py-4">
               <div className="space-y-2">
                 <Label htmlFor="subject">Subject *</Label>
                 <Input
@@ -315,6 +429,7 @@ export default function EditTicketDialog({
                   value={subject}
                   onChange={(e) => setSubject(e.target.value)}
                   disabled={isLoading}
+                  placeholder="Ticket subject"
                 />
               </div>
 
@@ -325,6 +440,7 @@ export default function EditTicketDialog({
                   value={summary}
                   onChange={(e) => setSummary(e.target.value)}
                   disabled={isLoading}
+                  placeholder="Brief summary (optional)"
                 />
               </div>
 
@@ -336,6 +452,7 @@ export default function EditTicketDialog({
                   onChange={(e) => setDescription(e.target.value)}
                   disabled={isLoading}
                   rows={4}
+                  placeholder="Detailed description of the issue"
                 />
               </div>
 
@@ -374,96 +491,64 @@ export default function EditTicketDialog({
               </div>
             </TabsContent>
 
-                        {/* Attachments Tab */}
-            <TabsContent value="attachments" className="space-y-4">
+            {/* Attachments Tab */}
+            <TabsContent value="attachments" className="space-y-4 py-4">
               <div>
-                <h3 className="font-semibold mb-3">Existing Attachments</h3>
-                {ticket.attachments && ticket.attachments.length > 0 ? (
-                  <div className="space-y-2 mb-4">
-                    {ticket.attachments.map((att) => {
-                      const displayName = att.file_path?.split("/").pop() || att.file_path
-                      return (
-                        <div
-                          key={att.id}
-                          className="flex items-center justify-between p-2 bg-gray-50 rounded border"
-                        >
-                          <div>
-                            <p className="text-sm font-medium text-gray-900">
-                              {displayName}
-                            </p>
-                            <p className="text-xs text-gray-500">{att.type}</p>
+                <h3 className="font-semibold mb-3 flex items-center gap-2">
+                  <FileUp className="h-4 w-4" />
+                  Existing Attachments
+                </h3>
+                {ticket.attachments && ticket.attachments.length > 0 && (
+                  <div className="space-y-2 p-3 bg-blue-50 rounded border border-blue-200">
+                    <h3 className="font-semibold flex items-center gap-2 text-blue-900">
+                      <FileUp className="h-4 w-4" />
+                      Ticket Attachments
+                    </h3>
+                    <p className="text-xs text-blue-700 mb-2">
+                      These are attachments from the original ticket report
+                    </p>
+                    <div className="space-y-2">
+                      {ticket.attachments.map((att) => {
+                        const displayName = att.file_path?.split("/").pop() || att.file_path
+                        return (
+                          <div
+                            key={att.id}
+                            className="flex items-center justify-between p-2 bg-white rounded border"
+                          >
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium text-gray-900 truncate">
+                                {displayName}
+                              </p>
+                              <p className="text-xs text-gray-500">{att.type}</p>
+                            </div>
+                            <div className="flex gap-2 ml-2 flex-shrink-0">
+                              <a
+                                href={`/api/tickets/${ticket.id}/attachments/${att.id}/download`}
+                                className="text-blue-600 hover:text-blue-800 text-xs font-medium"
+                                download
+                              >
+                                Download
+                              </a>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteAttachment(att.id)}
+                                className="text-red-600 hover:text-red-800 text-xs font-medium"
+                              >
+                                Delete
+                              </button>
+                            </div>
                           </div>
-                          <div className="flex gap-2">
-                            <a
-                              href={`/api/tickets/${ticket.id}/attachments/${att.id}/download`}
-                              className="text-blue-600 hover:text-blue-800 text-sm"
-                              download
-                            >
-                              Download
-                            </a>
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteAttachment(att.id)}
-                              className="text-red-600 hover:text-red-800 text-sm"
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        </div>
-                      )
-                    })}
-                  </div>
-                ) : (
-                  <p className="text-sm text-gray-500 mb-4">No attachments yet</p>
-                )}
-              </div>
-            
-              <div className="border-t pt-4">
-                <h3 className="font-semibold mb-3">Add New Attachments</h3>
-                {attachments.length > 0 && (
-                  <div className="space-y-2 mb-4">
-                    {attachments.map((att) => (
-                      <div
-                        key={att.id}
-                        className="flex items-center justify-between p-2 bg-white rounded border"
-                      >
-                        <span className="text-sm text-gray-600">{att.name}</span>
-                        <button
-                          type="button"
-                          onClick={() => removeAttachment(att.id)}
-                          className="text-red-500 hover:text-red-700"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
-                      </div>
-                    ))}
+                        )
+                      })}
+                    </div>
                   </div>
                 )}
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="w-full"
-                  disabled={isLoading}
-                >
-                  <Plus className="h-4 w-4 mr-2" />
-                  Add File
-                </Button>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  multiple
-                  onChange={handleFileSelect}
-                  className="hidden"
-                  disabled={isLoading}
-                />
               </div>
             </TabsContent>
 
-            {/* RCA Tab - Only for closed tickets */}
+            {/* RCA Tab */}
             {ticket.status === "closed" && (
-              <TabsContent value="rca" className="space-y-4">
-                
+              <TabsContent value="rca" className="space-y-4 py-4">
                 <div className="space-y-2">
                   <Label htmlFor="closed-at" className="flex items-center gap-2">
                     <Calendar className="h-4 w-4" />
@@ -477,61 +562,142 @@ export default function EditTicketDialog({
                     disabled={isLoading}
                   />
                 </div>
-
+                
                 <div className="space-y-2">
                   <Label htmlFor="rca-description">
-                    Root Cause Description
+                    Root Cause Description *
                   </Label>
                   <Textarea
                     id="rca-description"
-                    placeholder="Describe the root cause of the issue..."
+                    placeholder="What was the underlying cause of this issue?"
                     value={rootCauseDescription}
                     onChange={(e) => setRootCauseDescription(e.target.value)}
                     disabled={isLoading}
                     rows={3}
                   />
+                  <p className="text-xs text-gray-500">Minimum 10 characters</p>
                 </div>
-
+                
                 <div className="space-y-2">
                   <Label htmlFor="contributing-factors">
                     Contributing Factors
                   </Label>
                   <Textarea
                     id="contributing-factors"
-                    placeholder="List factors (one per line)..."
+                    placeholder="List factors that contributed (one per line)"
                     value={contributingFactors}
                     onChange={(e) => setContributingFactors(e.target.value)}
                     disabled={isLoading}
                     rows={2}
                   />
                 </div>
-
+                
                 <div className="space-y-2">
                   <Label htmlFor="prevention-measures">
                     Prevention Measures
                   </Label>
                   <Textarea
                     id="prevention-measures"
-                    placeholder="What measures should prevent this in future?..."
+                    placeholder="How can this issue be prevented in the future?"
                     value={preventionMeasures}
                     onChange={(e) => setPreventionMeasures(e.target.value)}
                     disabled={isLoading}
                     rows={2}
                   />
                 </div>
-
+                
                 <div className="space-y-2">
                   <Label htmlFor="resolution-steps">
-                    Resolution Steps
+                    Resolution Steps Taken
                   </Label>
                   <Textarea
                     id="resolution-steps"
-                    placeholder="List steps (one per line)..."
+                    placeholder="List the steps taken to resolve (one per line)"
                     value={resolutionSteps}
                     onChange={(e) => setResolutionSteps(e.target.value)}
                     disabled={isLoading}
                     rows={2}
                   />
+                </div>
+                
+                {/* RCA Attachments Section */}
+                <div className="space-y-2 p-3 bg-amber-50 rounded border border-amber-200">
+                  <Label className="font-semibold flex items-center gap-2 text-amber-900">
+                    <FileUp className="h-4 w-4" />
+                    RCA Attachments
+                  </Label>
+                  <p className="text-xs text-amber-800">
+                    Upload screenshots, guides, documentation, or reference materials specific to this RCA solution
+                  </p>
+                  <div className="space-y-3 mt-2">
+                    {/* Display existing RCA attachments if any */}
+                      {ticket.rca?.attachments && ticket.rca.attachments.length > 0 && (
+                      <div className="space-y-2 p-2 bg-green-50 rounded">
+                        <p className="text-xs font-medium text-green-900">Existing RCA Attachments:</p>
+                          {ticket.rca.attachments.map((att) => {
+                          const displayName = att.file_path?.split("/").pop() || att.file_path
+                          return (
+                            <div
+                              key={att.id}
+                              className="flex items-center justify-between p-2 bg-white rounded border border-green-200"
+                            >
+                              <span className="text-sm text-gray-700 truncate">{displayName}</span>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteRcaAttachment(att.id)}
+                                className="text-red-600 hover:text-red-800 text-xs font-medium ml-2 flex-shrink-0"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                
+                    {/* New RCA attachments to upload */}
+                    {rcaAttachments.length > 0 && (
+                      <div className="space-y-2">
+                        <p className="text-xs font-medium text-amber-900">New Files to Upload:</p>
+                        {rcaAttachments.map((att) => (
+                          <div
+                            key={att.id}
+                            className="flex items-center justify-between p-2 bg-white rounded border"
+                          >
+                            <span className="text-sm text-gray-700">{att.name}</span>
+                            <button
+                              type="button"
+                              onClick={() => removeRcaAttachment(att.id)}
+                              className="text-red-500 hover:text-red-700"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                
+                    {/* Add new RCA files button */}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => rcaFileInputRef.current?.click()}
+                      disabled={isLoading}
+                      className="gap-2"
+                    >
+                      <Plus className="h-4 w-4" />
+                      Add RCA File
+                    </Button>
+                    <input
+                      ref={rcaFileInputRef}
+                      type="file"
+                      multiple
+                      onChange={handleRcaFileSelect}
+                      className="hidden"
+                      disabled={isLoading}
+                    />
+                  </div>
                 </div>
               </TabsContent>
             )}
@@ -548,7 +714,7 @@ export default function EditTicketDialog({
             </Button>
             <Button onClick={handleSave} disabled={isLoading}>
               {isLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-              {isLoading ? "Saving..." : "Save"}
+              {isLoading ? "Saving..." : "Save Changes"}
             </Button>
           </div>
         </div>

@@ -11,10 +11,12 @@ export interface TicketEvent {
   created_at: string
 }
 
+// ==================== TICKET ATTACHMENTS ====================
+
 export interface Attachment {
   id: string
   ticket_id: string
-  file_name: string
+  file_name?: string
   type: string
   file_path: string
   file_size?: number
@@ -23,15 +25,31 @@ export interface Attachment {
   created_at: string
 }
 
+// ==================== RCA ATTACHMENTS ====================
+
+export interface RCAAttachment {
+  id: string
+  rca_id?: string
+  type: string
+  file_path: string
+  mime_type?: string
+  created_at?: string
+}
+
+// ==================== ROOT CAUSE ANALYSIS ====================
+
 export interface RootCauseAnalysis {
   id: string
   ticket_id: string
-  root_cause_description: string
-  contributing_factors: string[]
+  root_cause: string
+  root_cause_description?: string  // Alias for backwards compatibility
+  contributing_factors?: string[]
   prevention_measures?: string
-  resolution_steps: string[]
-  related_ticket_ids: string[]
+  resolution_steps?: string[]
+  attachments?: RCAAttachment[]  // RCA-specific attachments
+  created_by?: string
   created_at: string
+  updated_at?: string
 }
 
 export interface ResolutionNote {
@@ -65,7 +83,7 @@ export interface Ticket {
 }
 
 export interface TicketDetail extends Ticket {
-  rca: any
+  rca: RootCauseAnalysis | null
   summary?: string | null
   detailed_description: string
   created_by_id?: string | null
@@ -73,8 +91,8 @@ export interface TicketDetail extends Ticket {
   reopened_at?: string | null
   attachment_ids: string[]
   events: TicketEvent[]
-  attachments?: Attachment[]
-  root_cause_analysis?: RootCauseAnalysis
+  attachments?: Attachment[]  // Ticket attachments
+  root_cause_analysis?: RootCauseAnalysis  // RCA with its own attachments
   resolution_note?: ResolutionNote
 }
 
@@ -210,13 +228,41 @@ export const ticketService = {
     return response.data
   },
 
-  // Add Root Cause Analysis
-  async addRCA(ticketId: string, data: AddRCARequest): Promise<RootCauseAnalysis> {
-    const response = await apiClient.post<RootCauseAnalysis>(
-      `/api/tickets/${ticketId}/rca`,
-      data
-    )
-    return response.data
+  // Add Root Cause Analysis with RCA attachments
+  async createRCA(
+    ticketId: string,
+    rca: {
+      root_cause : string
+      contributing_factors?: string[]
+      prevention_measures?: string
+      resolution_steps?: string[]
+      rca_attachments?: string[]  // File paths for RCA attachments
+    }
+  ) {
+    try {
+      const response = await apiClient.post(
+        `/api/rca/tickets/${ticketId}/rca`,
+        rca
+      )
+      return response.data
+    } catch (error) {
+      console.error("Failed to create RCA:", error)
+      throw error
+    }
+  },
+
+  // Update RCA
+  async updateRCA(
+    ticketId: string,
+    rca: {
+      root_cause: string
+      contributing_factors?: string[]
+      prevention_measures?: string
+      resolution_steps?: string[]
+      rca_attachments?: string[]
+    }
+  ) {
+    return this.createRCA(ticketId, rca)
   },
 
   // Add Resolution Note
@@ -232,11 +278,11 @@ export const ticketService = {
   },
 
   async deleteTicket(ticketId: string): Promise<{ message: string }> {
-  const response = await apiClient.delete<{ message: string }>(
-    `/api/tickets/${ticketId}`
-  )
-  return response.data
-},
+    const response = await apiClient.delete<{ message: string }>(
+      `/api/tickets/${ticketId}`
+    )
+    return response.data
+  },
 
   async updateTicket(ticketId: string, data: {
     subject?: string
@@ -251,5 +297,28 @@ export const ticketService = {
     )
     return response.data
   },
-}
 
+  // Get RCA for a ticket
+  async getRCA(ticketId: string): Promise<RootCauseAnalysis | null> {
+    try {
+      const response = await apiClient.get<RootCauseAnalysis>(`/api/rca/tickets/${ticketId}/rca`)
+      return response.data
+    } catch (error) {
+      console.error("Failed to fetch RCA:", error)
+      return null
+    }
+  },
+
+  // Search RCAs by keyword
+  async searchRCAs(keyword: string, companyId?: string) {
+    try {
+      const params = new URLSearchParams({ keyword })
+      if (companyId) params.append("company_id", companyId)
+      const response = await apiClient.get(`/api/rca/search?${params}`)
+      return response.data
+    } catch (error) {
+      console.error("Failed to search RCAs:", error)
+      return { results: [] }
+    }
+  }
+}

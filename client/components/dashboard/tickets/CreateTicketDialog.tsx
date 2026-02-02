@@ -99,6 +99,8 @@ export default function CreateTicketDialog({
   const [engineers, setEngineers] = useState<User[]>([])
   const [loadingEngineers, setLoadingEngineers] = useState(true)
 
+  
+
   // Form state
   const [raisedByUserId, setRaisedByUserId] = useState<string>("")
   const [raisedByUserName, setRaisedByUserName] = useState<string>("")
@@ -123,6 +125,9 @@ export default function CreateTicketDialog({
   // Attachments state
   const [attachments, setAttachments] = useState<AttachmentFile[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const [rcaAttachments, setRcaAttachments] = useState<AttachmentFile[]>([]);
+  const rcaFileInputRef = useRef<HTMLInputElement>(null)  // NEW
 
   // Load data when dialog opens
   useEffect(() => {
@@ -280,6 +285,7 @@ export default function CreateTicketDialog({
     setUserSearch("")
     setError(null)
     setLoading(false)
+    setRcaAttachments([])
   }
 
     const handleSubmit = async (e: React.FormEvent) => {
@@ -411,6 +417,35 @@ export default function CreateTicketDialog({
         if (rootCauseDescription.trim().length < 10) {
           console.warn("Root cause description too short")
           return
+        }
+    
+        // Upload RCA attachments first
+        const uploadedRcaPaths: string[] = []
+        for (const attachment of rcaAttachments) {
+          try {
+            const formData = new FormData()
+            formData.append("file", attachment.file)
+    
+            const token = localStorage.getItem("auth_token")
+    
+            const response = await fetch(`/api/tickets/${ticketId}/upload-attachment`, {
+              method: "POST",
+              body: formData,
+              headers: {
+                ...(token && { Authorization: `Bearer ${token}` }),
+              },
+            })
+    
+            if (!response.ok) {
+              console.warn(`Failed to upload RCA attachment ${attachment.name}`)
+            } else {
+              const data = await response.json()
+              uploadedRcaPaths.push(data.file_path || attachment.name)
+              console.log(`✓ RCA Attachment uploaded: ${attachment.name}`)
+            }
+          } catch (err) {
+            console.error(`Failed to upload RCA attachment ${attachment.name}:`, err)
+          }
         }
     
         const rcaRequest: AddRCARequest = {
@@ -868,7 +903,7 @@ export default function CreateTicketDialog({
               )}
             </div>
 
-            {/* RCA Section - Only for closed older tickets */}
+                        {/* RCA Section - Only for closed older tickets */}
             {shouldShowRCA && (
               <div className="space-y-4 p-4 border rounded-lg bg-amber-50">
                 <div className="font-semibold text-amber-900">
@@ -935,6 +970,74 @@ export default function CreateTicketDialog({
                     disabled={loading}
                     rows={2}
                   />
+                </div>
+                
+                {/* NEW: RCA Attachments */}
+                <div className="space-y-2 p-3 bg-white rounded border">
+                  <Label className="font-semibold flex items-center gap-2">
+                    <FileUp className="h-4 w-4" />
+                    RCA Attachments (Screenshots, Guides, etc.)
+                  </Label>
+                  <div className="space-y-3">
+                    {rcaAttachments.length > 0 && (
+                      <div className="space-y-2">
+                        {rcaAttachments.map((att) => (
+                          <div
+                            key={att.id}
+                            className="flex items-center justify-between p-2 bg-gray-50 rounded border"
+                          >
+                            <span className="text-sm text-gray-600">{att.name}</span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setRcaAttachments((prev) =>
+                                  prev.filter((a) => a.id !== att.id)
+                                )
+                              }
+                              className="text-red-500 hover:text-red-700"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => rcaFileInputRef.current?.click()}
+                      disabled={loading}
+                      className="gap-2"
+                    >
+                      <Plus className="h-4 w-4" />
+                      Add RCA File
+                    </Button>
+                    <input
+                      ref={rcaFileInputRef}
+                      type="file"
+                      multiple
+                      onChange={(e) => {
+                        const files = e.currentTarget.files
+                        if (!files) return
+
+                        for (let i = 0; i < files.length; i++) {
+                          const file = files[i]
+                          const id = Math.random().toString(36).substring(2, 11)
+                          setRcaAttachments((prev) => [
+                            ...prev,
+                            { id, name: file.name, file },
+                          ])
+                        }
+
+                        if (rcaFileInputRef.current) {
+                          rcaFileInputRef.current.value = ""
+                        }
+                      }}
+                      className="hidden"
+                      disabled={loading}
+                    />
+                  </div>
                 </div>
               </div>
             )}

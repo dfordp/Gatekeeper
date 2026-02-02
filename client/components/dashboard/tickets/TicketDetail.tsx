@@ -359,25 +359,20 @@ export default function TicketDetail({ ticketId }: TicketDetailProps) {
           </div>
         </TabsContent>
 
-        {/* RCA Tab */}
+                {/* RCA Tab */}
         {ticket.rca && (
           <TabsContent value="rca" className="space-y-6">
             <Card>
-              {ticket.rca.ticket_closed_at && (
-                <p className="text-xs text-gray-500 mt-2">
-                  Ticket closed: {new Date(ticket.rca.ticket_closed_at).toLocaleString()}
-                </p>
-              )}
               <CardHeader>
                 <CardTitle>Root Cause Analysis</CardTitle>
               </CardHeader>
-              <CardContent className="space-y-4">
+              <CardContent className="space-y-6">
                 <div>
                   <p className="text-sm font-semibold text-gray-700 mb-2">
                     Root Cause
                   </p>
                   <p className="text-gray-700">
-                    {ticket.rca.root_cause_description}
+                    {ticket.rca.root_cause || ticket.rca.root_cause_description}
                   </p>
                 </div>
 
@@ -423,13 +418,72 @@ export default function TicketDetail({ ticketId }: TicketDetailProps) {
                       </ol>
                     </div>
                   )}
+
+                {/* RCA Attachments Section */}
+                {ticket.rca.attachments && ticket.rca.attachments.length > 0 && (
+                  <div className="pt-4 border-t">
+                    <p className="text-sm font-semibold text-gray-700 mb-4">
+                      📎 RCA Attachments ({ticket.rca.attachments.length})
+                    </p>
+                    <div className="space-y-3">
+                      {ticket.rca.attachments.map((attachment) => {
+                        const displayName = attachment.file_path?.split('/').pop() || attachment.file_path
+                        const isImage = isImageFile(displayName)
+
+                        return (
+                          <div
+                            key={attachment.id}
+                            className="border border-amber-200 bg-amber-50 rounded-lg overflow-hidden"
+                          >
+                            {/* Image Rendering for RCA attachments */}
+                            {isImage && (
+                              <div className="mb-3 p-3">
+                                <img
+                                  src={attachment.file_path}
+                                  alt={displayName}
+                                  className="max-w-full max-h-96 object-contain rounded"
+                                  onError={(e) => {
+                                    console.error(`Failed to load RCA attachment image: ${displayName}`)
+                                  }}
+                                />
+                              </div>
+                            )}
+
+                            {/* File Info */}
+                            <div className="p-3 bg-amber-100 border-t border-amber-200 flex items-center justify-between">
+                              <div>
+                                <p className="text-sm font-medium text-amber-900">
+                                  {displayName}
+                                </p>
+                                <p className="text-xs text-amber-700">
+                                  {attachment.type || 'attachment'}
+                                </p>
+                              </div>
+                              {attachment.file_path.startsWith('http') && (
+                                <a
+                                  href={attachment.file_path}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 text-amber-700 hover:text-amber-900 text-sm font-medium"
+                                >
+                                  <Download className="h-4 w-4" />
+                                  Open
+                                </a>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
               </CardContent>
             </Card>
 
-            {ticket.resolution && (
+            {ticket.resolution_note && (
               <Card>
                 <CardHeader>
-                  <CardTitle>Resolution</CardTitle>
+                  <CardTitle>Resolution Note</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div>
@@ -437,18 +491,18 @@ export default function TicketDetail({ ticketId }: TicketDetailProps) {
                       Solution
                     </p>
                     <p className="text-gray-700">
-                      {ticket.resolution.solution_description}
+                      {ticket.resolution_note.solution_description}
                     </p>
                   </div>
 
-                  {ticket.resolution.steps_taken &&
-                    ticket.resolution.steps_taken.length > 0 && (
+                  {ticket.resolution_note.steps_taken &&
+                    ticket.resolution_note.steps_taken.length > 0 && (
                       <div>
                         <p className="text-sm font-semibold text-gray-700 mb-2">
                           Steps Taken
                         </p>
                         <ol className="list-decimal list-inside space-y-1">
-                          {ticket.resolution.steps_taken.map((step, i) => (
+                          {ticket.resolution_note.steps_taken.map((step, i) => (
                             <li key={i} className="text-gray-700">
                               {step}
                             </li>
@@ -457,14 +511,14 @@ export default function TicketDetail({ ticketId }: TicketDetailProps) {
                       </div>
                     )}
 
-                  {ticket.resolution.resources_used &&
-                    ticket.resolution.resources_used.length > 0 && (
+                  {ticket.resolution_note.resources_used &&
+                    ticket.resolution_note.resources_used.length > 0 && (
                       <div>
                         <p className="text-sm font-semibold text-gray-700 mb-2">
                           Resources Used
                         </p>
                         <ul className="list-disc list-inside space-y-1">
-                          {ticket.resolution.resources_used.map((res, i) => (
+                          {ticket.resolution_note.resources_used.map((res, i) => (
                             <li key={i} className="text-gray-700">
                               {res}
                             </li>
@@ -472,6 +526,17 @@ export default function TicketDetail({ ticketId }: TicketDetailProps) {
                         </ul>
                       </div>
                     )}
+
+                  {ticket.resolution_note.follow_up_notes && (
+                    <div>
+                      <p className="text-sm font-semibold text-gray-700 mb-2">
+                        Follow-up Notes
+                      </p>
+                      <p className="text-gray-700">
+                        {ticket.resolution_note.follow_up_notes}
+                      </p>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             )}

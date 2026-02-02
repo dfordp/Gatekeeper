@@ -8,6 +8,7 @@ import TicketDetail from "@/components/dashboard/tickets/TicketDetail"
 import { useRouter, useParams } from "next/navigation"
 import { useEffect } from "react"
 
+
 export default function TicketDetailPage() {
   const router = useRouter()
   const params = useParams()
