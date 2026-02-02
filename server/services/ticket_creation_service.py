@@ -498,6 +498,7 @@ class TicketCreationService:
         contributing_factors: Optional[List[str]] = None,
         prevention_measures: Optional[str] = None,
         resolution_steps: Optional[List[str]] = None,
+        rca_attachments: Optional[List[str]] = None,
         related_ticket_ids: Optional[List[str]] = None,
         ticket_closed_at: Optional[str] = None,
         admin_id: Optional[str] = None
@@ -894,5 +895,104 @@ class TicketCreationService:
             db.rollback()
             logger.error(f"Failed to delete ticket: {e}")
             raise ValidationError(f"Failed to delete ticket: {str(e)}")
+        finally:
+            db.close()
+
+    @staticmethod
+    def update_ticket(
+        ticket_id: str,
+        subject: Optional[str] = None,
+        summary: Optional[str] = None,
+        detailed_description: Optional[str] = None,
+        category: Optional[str] = None,
+        level: Optional[str] = None,
+        admin_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Update ticket details"""
+        db = SessionLocal()
+        try:
+            ticket_uuid = UUID(ticket_id)
+            
+            # Verify ticket exists
+            ticket = db.query(Ticket).filter(Ticket.id == ticket_uuid).first()
+            if not ticket:
+                raise NotFoundError("Ticket not found")
+            
+            # Validate inputs
+            if subject is not None:
+                if len(subject.strip()) < 3:
+                    raise ValidationError("Subject must be at least 3 characters")
+                ticket.subject = subject.strip()
+            
+            if summary is not None:
+                ticket.summary = summary.strip() if summary.strip() else None
+            
+            if detailed_description is not None:
+                if len(detailed_description.strip()) < 10:
+                    raise ValidationError("Description must be at least 10 characters")
+                ticket.detailed_description = detailed_description.strip()
+            
+            if category is not None:
+                ticket.category = category.strip() if category.strip() else None
+            
+            if level is not None:
+                valid_levels = ["level-1", "level-2", "level-3"]
+                if level not in valid_levels:
+                    raise ValidationError(f"Invalid level. Must be one of: {', '.join(valid_levels)}")
+                ticket.level = level
+            
+            ticket.updated_at = datetime.utcnow()
+            db.flush()
+            
+            # Create update event
+            changes = {}
+            if subject is not None:
+                changes["subject"] = subject.strip()
+            if summary is not None:
+                changes["summary"] = summary.strip() if summary else None
+            if detailed_description is not None:
+                changes["detailed_description"] = detailed_description.strip()
+            if category is not None:
+                changes["category"] = category.strip() if category else None
+            if level is not None:
+                changes["level"] = level
+            
+            ticket_event = TicketEvent(
+                ticket_id=ticket_uuid,
+                event_type="ticket_updated",
+                actor_user_id=ticket.raised_by_user_id,
+                payload={
+                    "changes": changes,
+                    "updated_at": datetime.utcnow().isoformat()
+                }
+            )
+            db.add(ticket_event)
+            db.commit()
+            
+            logger.info(f"✓ Ticket updated: {ticket.ticket_no}")
+            
+            # Audit log
+            if admin_id:
+                try:
+                    AdminAuditLog.create(
+                        admin_user_id=UUID(admin_id),
+                        action="ticket_updated",
+                        resource="ticket",
+                        resource_id=ticket_id,
+                        changes=changes
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to create audit log: {e}")
+            
+            from .ticket_service import TicketService
+            return TicketService._format_ticket(ticket)
+            
+        except (ValidationError, NotFoundError):
+            db.rollback()
+            raise
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Failed to update ticket: {e}")
+            raise ValidationError(f"Failed to update ticket: {str(e)}")
         finally:
             db.close()

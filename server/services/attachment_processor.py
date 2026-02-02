@@ -604,3 +604,224 @@ class AttachmentProcessor:
         
         # Try as plain text
         return AttachmentProcessor.extract_text_from_file(actual_path)
+     
+    @staticmethod
+    def process_rca_attachments(
+        rca_id: str,
+        ticket_id: str,
+        company_id: str,
+        attachment_paths: List[str]
+    ) -> int:
+        """
+        Process RCA attachments - extract text and create embeddings.
+        Called when RCA is created/updated with attachments.
+        
+        Now creates embeddings linked to RCAAttachment records via rca_attachment_id.
+        """
+        if not attachment_paths:
+            logger.debug("No RCA attachments to process")
+            return 0
+        
+        logger.info(f"Processing {len(attachment_paths)} RCA attachments for ticket {ticket_id}")
+        
+        db = SessionLocal()
+        total_count = 0
+        
+        try:
+            from core.database import RCAAttachment
+            from .embedding_manager import EmbeddingManager
+            
+            # Get the RCA attachment records we just created
+            rca_attachments = db.query(RCAAttachment).filter(
+                RCAAttachment.rca_id == UUID(rca_id)
+            ).all()
+            
+            for idx, rca_att in enumerate(rca_attachments, 1):
+                try:
+                    logger.info(f"Processing RCA attachment {idx}/{len(rca_attachments)}: {rca_att.file_path}")
+                    
+                    # Extract text from attachment
+                    extracted_text = None
+                    
+                    # Skip URLs - they're just references
+                    if not rca_att.file_path.startswith(('http://', 'https://')):
+                        extracted_text = AttachmentProcessor.extract_text_from_attachment(
+                            rca_att.file_path,
+                            mime_type=rca_att.mime_type
+                        )
+                    
+                    if not extracted_text:
+                        logger.warning(f"No text extracted from RCA attachment: {rca_att.file_path}")
+                        continue
+                    
+                    logger.info(f"  Extracted {len(extracted_text)} characters from RCA attachment")
+                    
+                    # Create embeddings from RCA attachment text
+                    count = AttachmentProcessor._create_rca_embeddings(
+                        text=extracted_text,
+                        ticket_id=ticket_id,
+                        company_id=company_id,
+                        rca_attachment_id=str(rca_att.id)
+                    )
+                    
+                    total_count += count
+                    logger.info(f"  ✓ Created {count} embeddings from RCA attachment")
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to process RCA attachment {rca_att.file_path}: {e}")
+                    continue
+            
+            logger.info(f"✓ RCA attachments processing complete: {total_count} embeddings created")
+            return total_count
+            
+        except Exception as e:
+            logger.error(f"Failed to process RCA attachments: {e}")
+            return 0
+        finally:
+            db.close()
+    
+    
+    @staticmethod
+    def _create_rca_embeddings(
+        text: str,
+        ticket_id: str,
+        company_id: str,
+        rca_attachment_id: str
+    ) -> int:
+        """
+        Create embeddings from RCA attachment text.
+        Now links to RCAAttachment via rca_attachment_id instead of attachment_id.
+        """
+        logger.info(f"Creating RCA embeddings for RCA attachment: {rca_attachment_id}")
+        
+        db = SessionLocal()
+        count = 0
+        
+        try:
+            from core.database import Embedding
+            from .embedding_manager import EmbeddingManager
+            
+            # Chunk the text
+            chunks = AttachmentProcessor._chunk_text(text)
+            logger.info(f"  Split into {len(chunks)} chunks")
+            
+            if not chunks:
+                return 0
+            
+            # Create embedding for each chunk
+            for idx, chunk in enumerate(chunks):
+                try:
+                    if not chunk or not chunk.strip():
+                        continue
+                    
+                    # Create embedding record with rca_attachment_id
+                    emb = Embedding(
+                        company_id=UUID(company_id),
+                        ticket_id=UUID(ticket_id),
+                        attachment_id=None,  # Regular attachment, not used for RCA
+                        rca_attachment_id=UUID(rca_attachment_id),  # Link to RCAAttachment
+                        source_type="rca",  # Tagged as RCA source
+                        chunk_index=idx,
+                        text_content=chunk[:AttachmentProcessor.MAX_TEXT_LENGTH],
+                        is_active=True
+                    )
+                    db.add(emb)
+                    db.flush()
+                    
+                    # Sync to Qdrant
+                    try:
+                        EmbeddingManager._sync_embedding_to_qdrant(emb, db)
+                        count += 1
+                    except Exception as e:
+                        logger.warning(f"Failed to sync embedding to Qdrant: {e}")
+                        
+                except Exception as e:
+                    logger.warning(f"Failed to create embedding for chunk {idx}: {e}")
+                    continue
+            
+            if count > 0:
+                db.commit()
+                logger.info(f"✓ Committed {count} RCA embeddings to database")
+            
+            return count
+            
+        except Exception as e:
+            logger.error(f"Failed to create RCA embeddings: {e}")
+            db.rollback()
+            return 0
+        finally:
+            db.close()
+    
+    
+    @staticmethod
+    def _create_rca_embeddings(
+        text: str,
+        ticket_id: str,
+        company_id: str,
+        attachment_path: str
+    ) -> int:
+        """
+        Create embeddings from RCA attachment text.
+        Similar to _create_embeddings but tagged as RCA source.
+        """
+        logger.info(f"Creating RCA embeddings for attachment: {attachment_path}")
+        
+        db = SessionLocal()
+        count = 0
+        
+        try:
+            from .embedding_manager import EmbeddingManager
+            
+            # Chunk the text
+            chunks = AttachmentProcessor._chunk_text(text)
+            logger.info(f"  Split into {len(chunks)} chunks")
+            
+            if not chunks:
+                return 0
+            
+            # Create embedding for each chunk
+            for idx, chunk in enumerate(chunks):
+                try:
+                    if not chunk or not chunk.strip():
+                        continue
+                    
+                    # Create embedding record tagged as RCA
+                    emb = Embedding(
+                        company_id=UUID(company_id),
+                        ticket_id=UUID(ticket_id),
+                        attachment_id=None,  # RCA attachments don't link to Attachment table
+                        source_type="rca",  # Tagged as RCA source
+                        chunk_index=idx,
+                        text_content=chunk[:AttachmentProcessor.MAX_TEXT_LENGTH],
+                        is_active=True
+                    )
+                    db.add(emb)
+                    db.flush()
+                    
+                    # Sync to Qdrant
+                    point_id = EmbeddingManager._sync_embedding_to_qdrant(
+                        db=db,
+                        embedding_obj=emb,
+                        ticket_id=ticket_id,
+                        company_id=company_id,
+                        source_type="rca",
+                        text_content=chunk
+                    )
+                    
+                    count += 1
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to create RCA embedding for chunk {idx}: {e}")
+            
+            if count > 0:
+                db.commit()
+                logger.info(f"  ✓ Committed {count} RCA embeddings")
+            
+            return count
+            
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Failed to create RCA embeddings: {e}")
+            return 0
+        finally:
+            db.close()

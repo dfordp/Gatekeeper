@@ -63,6 +63,7 @@ class AddRCARequest(BaseModel):
     prevention_measures: Optional[str] = Field(None, description="Prevention measures")
     resolution_steps: Optional[List[str]] = Field(None, description="Steps taken")
     related_ticket_ids: Optional[List[str]] = Field(None, description="Related ticket UUIDs")
+    rca_attachments: Optional[List[str]] = Field(None, description="File paths for RCA attachments")
     ticket_closed_at: Optional[str] = Field(None, description="Ticket closed date (ISO format)")
 
 
@@ -398,6 +399,7 @@ async def add_rca(
             contributing_factors=request.contributing_factors,
             prevention_measures=request.prevention_measures,
             resolution_steps=request.resolution_steps,
+            rca_attachments=request.rca_attachments,
             related_ticket_ids=request.related_ticket_ids,
             ticket_closed_at=request.ticket_closed_at,
             admin_id=None
@@ -572,3 +574,153 @@ async def delete_attachment(
     except Exception as e:
         logger.error(f"Error deleting attachment: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to delete attachment: {str(e)}")
+
+@router.post("/{ticket_id}/upload-rca-attachment")
+async def upload_rca_attachment(
+    ticket_id: str,
+    file: UploadFile = File(...)
+):
+    """
+    Upload RCA-specific attachment file.
+    
+    Workflow:
+    1. Save file locally
+    2. Upload to Cloudinary
+    3. Delete from local storage
+    4. Return file path for RCA creation
+    
+    Note: RCA attachments are processed when RCA is created/updated,
+    not immediately upon upload.
+    """
+    try:
+        from core.database import SessionLocal, Ticket
+        from uuid import UUID
+        
+        # Verify ticket exists first
+        db = SessionLocal()
+        try:
+            ticket = db.query(Ticket).filter(Ticket.id == UUID(ticket_id)).first()
+            if not ticket:
+                raise NotFoundError("Ticket not found")
+        finally:
+            db.close()
+        
+        # Read file content
+        content = await file.read()
+        
+        # Process file (save → upload to Cloudinary → delete local)
+        result = FileUploadService.process_file_upload(content, file.filename)
+        
+        if not result.get("success"):
+            raise HTTPException(status_code=400, detail=f"Upload failed: {result.get('error')}")
+        
+        # Extract URLs - prefer Cloudinary, fallback to local path
+        cloudinary_url = result.get("cloudinary_url")
+        local_path = result.get("file_path")
+        
+        # Use Cloudinary URL if available, otherwise use local path
+        storage_path = cloudinary_url if cloudinary_url else local_path
+        
+        if not storage_path:
+            raise HTTPException(status_code=500, detail="No file URL available after upload")
+        
+        logger.info(f"RCA attachment upload - using: {storage_path}")
+        
+        # Return the file path to be used when creating/updating RCA
+        return {
+            "success": True,
+            "file_path": storage_path,
+            "file_name": result.get("file_name"),
+            "file_size": result.get("file_size"),
+            "mime_type": file.content_type
+        }
+        
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error uploading RCA attachment: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to upload RCA attachment: {str(e)}")
+
+@router.delete("/{ticket_id}/rca-attachments/{attachment_id}")
+async def delete_rca_attachment(
+    ticket_id: str,
+    attachment_id: str,
+    admin_payload: dict = Depends(get_current_admin)
+):
+    """Delete RCA attachment and its embeddings"""
+    try:
+        from core.database import SessionLocal, RCAAttachment, Ticket, Embedding
+        from uuid import UUID
+        
+        db = SessionLocal()
+        try:
+            ticket_uuid = UUID(ticket_id)
+            attachment_uuid = UUID(attachment_id)
+            
+            # Verify ticket exists
+            ticket = db.query(Ticket).filter(Ticket.id == ticket_uuid).first()
+            if not ticket:
+                raise HTTPException(status_code=404, detail="Ticket not found")
+            
+            # Get RCA attachment
+            rca_attachment = db.query(RCAAttachment).filter(
+                RCAAttachment.id == attachment_uuid
+            ).first()
+            
+            if not rca_attachment:
+                raise HTTPException(status_code=404, detail="RCA attachment not found")
+            
+            logger.info(f"Deleting RCA attachment {attachment_id}")
+            
+            # Deprecate all embeddings linked to this RCA attachment
+            try:
+                embeddings = db.query(Embedding).filter(
+                    Embedding.rca_attachment_id == attachment_uuid
+                ).all()
+                
+                if embeddings:
+                    logger.info(f"Deprecating {len(embeddings)} embeddings for RCA attachment {attachment_id}")
+                    for embedding in embeddings:
+                        embedding.is_deprecated = True
+                    db.flush()
+                    logger.info(f"✓ Deprecated {len(embeddings)} embeddings")
+            except Exception as e:
+                logger.warning(f"Failed to deprecate embeddings: {e}")
+            
+            # Delete from Cloudinary if applicable
+            if rca_attachment.file_path and rca_attachment.file_path.startswith("http"):
+                try:
+                    import cloudinary
+                    import cloudinary.uploader
+                    from core.config import CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET
+                    
+                    if all([CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET]):
+                        cloudinary.config(
+                            cloud_name=CLOUDINARY_CLOUD_NAME,
+                            api_key=CLOUDINARY_API_KEY,
+                            api_secret=CLOUDINARY_API_SECRET
+                        )
+                        public_id = rca_attachment.file_path.split('/')[-1].split('.')[0]
+                        cloudinary.uploader.destroy(f"tickets/{public_id}")
+                        logger.info(f"✓ Deleted from Cloudinary: {public_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete from Cloudinary: {e}")
+            
+            # Delete from database
+            db.delete(rca_attachment)
+            db.commit()
+            
+            logger.info(f"✓ RCA attachment deleted: {attachment_id}")
+            
+            return {
+                "success": True,
+                "message": "RCA attachment deleted successfully",
+                "attachment_id": attachment_id
+            }
+        finally:
+            db.close()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting RCA attachment: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete RCA attachment: {str(e)}")

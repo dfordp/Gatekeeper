@@ -206,6 +206,7 @@ class RootCauseAnalysis(Base):
     
     ticket = relationship("Ticket", foreign_keys=[ticket_id], back_populates="root_cause_analysis")
     created_by_user = relationship("User", foreign_keys=[created_by_user_id], back_populates="root_cause_analyses")
+    attachments = relationship("RCAAttachment", back_populates="rca", cascade="all, delete-orphan")
     
     __table_args__ = (
         Index("idx_rca_ticket", "ticket_id"),
@@ -214,6 +215,30 @@ class RootCauseAnalysis(Base):
     
     def __repr__(self):
         return f"<RootCauseAnalysis {self.ticket_id}>"
+    
+class RCAAttachment(Base):
+    """RCA Attachment model - files attached to Root Cause Analysis records"""
+    __tablename__ = "rca_attachment"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    rca_id = Column(UUID(as_uuid=True), ForeignKey("root_cause_analysis.id"), nullable=False, index=True)
+    type = Column(String(50), nullable=False)
+    file_path = Column(String(1000), nullable=False)
+    mime_type = Column(String(100), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    
+    rca = relationship("RootCauseAnalysis", foreign_keys=[rca_id], back_populates="attachments")
+    embeddings = relationship("Embedding", back_populates="rca_attachment")
+    
+    __table_args__ = (
+        Index("idx_rca_attachment_rca", "rca_id"),
+        Index("idx_rca_attachment_type", "type"),
+        Index("idx_rca_attachment_created_at", "created_at"),
+    )
+    
+    def __repr__(self):
+        return f"<RCAAttachment {self.file_path}>"
+
 
 
 class ResolutionNote(Base):
@@ -250,6 +275,7 @@ class Embedding(Base):
     company_id = Column(UUID(as_uuid=True), ForeignKey("company.id"), nullable=False, index=True)
     ticket_id = Column(UUID(as_uuid=True), ForeignKey("ticket.id"), nullable=False, index=True)
     attachment_id = Column(UUID(as_uuid=True), ForeignKey("attachment.id"), nullable=True)
+    rca_attachment_id = Column(UUID(as_uuid=True), ForeignKey("rca_attachment.id"), nullable=True)
     source_type = Column(String(50), nullable=False)
     chunk_index = Column(Integer, nullable=False, default=0)
     text_content = Column(Text, nullable=False)
@@ -262,12 +288,14 @@ class Embedding(Base):
     company = relationship("Company", back_populates="embeddings")
     ticket = relationship("Ticket", back_populates="embeddings")
     attachment = relationship("Attachment", back_populates="embeddings")
+    rca_attachment = relationship("RCAAttachment", back_populates="embeddings")
     
     __table_args__ = (
         CheckConstraint("source_type IN ('ticket_summary', 'ticket_description', 'resolution', 'rca', 'log_snippet')"),
         Index("idx_embedding_company_active", "company_id", "is_active"),
         Index("idx_embedding_ticket", "ticket_id"),
         Index("idx_embedding_attachment", "attachment_id"),
+        Index("idx_embedding_rca_attachment", "rca_attachment_id"),
         Index("idx_embedding_created_at", "created_at"),
     )
     

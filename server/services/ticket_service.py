@@ -173,6 +173,16 @@ class TicketService:
                 "prevention_measures": ticket.root_cause_analysis.prevention_measures,
                 "resolution_steps": ticket.root_cause_analysis.resolution_steps or [],
                 "related_ticket_ids": ticket.root_cause_analysis.related_ticket_ids or [],
+                "attachments": [
+                    {
+                        "id": str(att.id),
+                        "type": att.type,
+                        "file_path": att.file_path,
+                        "mime_type": att.mime_type,
+                        "created_at": att.created_at.isoformat()
+                    }
+                    for att in ticket.root_cause_analysis.attachments
+                ] if ticket.root_cause_analysis.attachments else [],
                 "created_at": ticket.root_cause_analysis.created_at.isoformat(),
                 "updated_at": ticket.root_cause_analysis.updated_at.isoformat()
             } if ticket.root_cause_analysis else None,

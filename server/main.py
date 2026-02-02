@@ -42,6 +42,8 @@ from routes.user_routes import router as user_router
 from routes.admin_routes import router as admin_routes_router
 from routes.ticket_routes import router as ticket_routes_router
 from routes.company_routes import router as company_routes_router
+from routes.search_routes import router as search_router
+from routes.rca_routes import router as rca_router
 
 # Legacy session management (keeping for bot compatibility)
 from session import (
@@ -124,6 +126,9 @@ app.include_router(user_router)
 app.include_router(admin_routes_router)
 app.include_router(ticket_routes_router)
 app.include_router(company_routes_router)
+app.include_router(search_router)
+app.include_router(rca_router)
+
 
 # Legacy HTTP routes (existing bot)
 app.include_router(http_router)
