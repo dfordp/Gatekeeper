@@ -1,85 +1,216 @@
 # server/services/ticket_service.py
-"""Ticket service - handles ticket retrieval, updates, and analytics"""
-from typing import Dict, Any, Optional, List
-from datetime import datetime, timedelta
-from uuid import UUID
-from sqlalchemy import func, and_, or_
-from sqlalchemy.orm import Session
+"""Ticket retrieval and update service with embedding management"""
 
-from core.database import SessionLocal, Ticket, TicketEvent, AdminAuditLog, Company, User
-from utils.exceptions import ValidationError, NotFoundError
+import logging
+from typing import Optional, Dict, Any
+from datetime import datetime
+from uuid import UUID
+
+from core.database import SessionLocal, Ticket, TicketEvent, AdminAuditLog, User
+from utils.exceptions import ValidationError, NotFoundError, ConflictError
 from core.logger import get_logger
 
 logger = get_logger(__name__)
 
 
 class TicketService:
-    """Service for ticket management and analytics"""
-    
+    """Service for ticket retrieval and updates"""
     @staticmethod
-    def get_tickets(company_id: Optional[str] = None, status: Optional[str] = None, limit: int = 50, offset: int = 0, search: Optional[str] = None) -> Dict[str, Any]:
-        """Get paginated list of tickets with optional filters."""
+    def get_tickets(
+        company_id: Optional[str] = None,
+        status: Optional[str] = None,
+        search: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0
+    ) -> Dict[str, Any]:
+        """
+        Get paginated list of tickets with optional filtering and search.
+        
+        Args:
+            company_id: Filter by company ID (optional)
+            status: Filter by ticket status (optional)
+            search: Search in ticket number, subject, and description (optional)
+            limit: Number of tickets per page (default 50)
+            offset: Pagination offset (default 0)
+            
+        Returns:
+            Dict containing:
+            - tickets: List of formatted ticket objects
+            - total: Total count of matching tickets
+            - limit: Limit parameter used
+            - offset: Offset parameter used
+        """
         db = SessionLocal()
         try:
+            # Start with base query
             query = db.query(Ticket)
+            
+            # Apply filters if provided
             if company_id:
-                query = query.filter(Ticket.company_id == UUID(company_id))
+                try:
+                    company_uuid = UUID(company_id)
+                    query = query.filter(Ticket.company_id == company_uuid)
+                except ValueError:
+                    logger.warning(f"Invalid company_id format: {company_id}")
+            
             if status:
-                query = query.filter(Ticket.status == status)
-            if search:
-                search_pattern = f"%{search}%"
-                query = query.filter(or_(Ticket.subject.ilike(search_pattern), Ticket.summary.ilike(search_pattern), Ticket.ticket_no.ilike(search_pattern)))
+                valid_statuses = ["open", "in_progress", "resolved", "closed", "reopened"]
+                if status in valid_statuses:
+                    query = query.filter(Ticket.status == status)
+                else:
+                    logger.warning(f"Invalid status filter: {status}")
+            
+            # Apply search filter if provided
+            if search and search.strip():
+                search_term = f"%{search.strip()}%"
+                # Search in ticket number, subject, and description
+                from sqlalchemy import or_
+                query = query.filter(
+                    or_(
+                        Ticket.ticket_no.ilike(search_term),
+                        Ticket.subject.ilike(search_term),
+                        Ticket.detailed_description.ilike(search_term)
+                    )
+                )
+                logger.debug(f"Applied search filter: {search}")
+            
+            # Get total count before pagination
             total = query.count()
+            
+            # Apply pagination and ordering (latest first)
             tickets = query.order_by(Ticket.created_at.desc()).limit(limit).offset(offset).all()
-            tickets_data = [{"id": str(t.id), "ticket_no": t.ticket_no, "subject": t.subject, "status": t.status, "category": t.category, "level": t.level, "company_id": str(t.company_id), "company_name": t.company.name if t.company else None, "created_by": t.raised_by_user.name if t.raised_by_user else None, "assigned_to": t.assigned_engineer.name if t.assigned_engineer else None, "created_at": t.created_at.isoformat(), "updated_at": t.updated_at.isoformat(), "closed_at": t.closed_at.isoformat() if t.closed_at else None} for t in tickets]
-            return {"tickets": tickets_data, "total": total, "limit": limit, "offset": offset}
+            
+            logger.info(f"Retrieved {len(tickets)} tickets (total: {total}, limit: {limit}, offset: {offset}, search: {search})")
+            
+            return {
+                "tickets": [TicketService._format_ticket(t) for t in tickets],
+                "total": total,
+                "limit": limit,
+                "offset": offset
+            }
+            
         except Exception as e:
-            logger.error(f"Failed to get tickets: {e}")
-            raise ValidationError("Failed to retrieve tickets")
+            logger.error(f"Failed to retrieve tickets: {e}")
+            raise ValidationError(f"Failed to retrieve tickets: {str(e)}")
         finally:
             db.close()
     
     @staticmethod
     def get_ticket_by_id(ticket_id: str) -> Dict[str, Any]:
-        """Get ticket details by ID with attachments and RCA"""
+        """Get ticket by ID with all related data"""
         db = SessionLocal()
         try:
-            from core.database import Attachment, RootCauseAnalysis, ResolutionNote
             ticket = db.query(Ticket).filter(Ticket.id == UUID(ticket_id)).first()
             if not ticket:
                 raise NotFoundError("Ticket not found")
             
-            events = db.query(TicketEvent).filter(TicketEvent.ticket_id == ticket.id).order_by(TicketEvent.created_at).all()
-            events_data = [{"id": str(e.id), "type": e.event_type, "actor": e.actor_user.name if e.actor_user else "System", "payload": e.payload, "created_at": e.created_at.isoformat()} for e in events]
-            
-            attachments = db.query(Attachment).filter(Attachment.ticket_id == ticket.id).all()
-            attachments_data = [{"id": str(a.id), "type": a.type, "file_path": a.file_path, "mime_type": a.mime_type, "created_at": a.created_at.isoformat()} for a in attachments]
-            
-            rca = db.query(RootCauseAnalysis).filter(RootCauseAnalysis.ticket_id == ticket.id).first()
-            rca_data = None
-            if rca:
-                rca_data = {"id": str(rca.id), "root_cause_description": rca.root_cause_description, "contributing_factors": rca.contributing_factors, "prevention_measures": rca.prevention_measures, "resolution_steps": rca.resolution_steps, "related_ticket_ids": rca.related_ticket_ids, "created_by": rca.created_by_user.name if rca.created_by_user else None, "ticket_closed_at": ticket.closed_at.isoformat() if ticket.closed_at else None, "created_at": rca.created_at.isoformat()}
-            
-            resolution = db.query(ResolutionNote).filter(ResolutionNote.ticket_id == ticket.id).first()
-            resolution_data = None
-            if resolution:
-                resolution_data = {"id": str(resolution.id), "solution_description": resolution.solution_description, "steps_taken": resolution.steps_taken, "resources_used": resolution.resources_used, "follow_up_notes": resolution.follow_up_notes, "created_by": resolution.created_by_user.name if resolution.created_by_user else None, "created_at": resolution.created_at.isoformat()}
-            
-            return {"id": str(ticket.id), "ticket_no": ticket.ticket_no, "subject": ticket.subject, "summary": ticket.summary, "detailed_description": ticket.detailed_description, "status": ticket.status, "category": ticket.category, "level": ticket.level, "company_id": str(ticket.company_id), "company_name": ticket.company.name if ticket.company else None, "created_by": ticket.raised_by_user.name if ticket.raised_by_user else None, "created_by_id": str(ticket.raised_by_user_id) if ticket.raised_by_user_id else None, "assigned_to": ticket.assigned_engineer.name if ticket.assigned_engineer else None, "assigned_to_id": str(ticket.assigned_engineer_id) if ticket.assigned_engineer_id else None, "created_at": ticket.created_at.isoformat(), "updated_at": ticket.updated_at.isoformat(), "closed_at": ticket.closed_at.isoformat() if ticket.closed_at else None, "reopened_at": ticket.reopened_at.isoformat() if ticket.reopened_at else None, "attachments": attachments_data, "rca": rca_data, "resolution": resolution_data, "events": events_data}
-        except NotFoundError:
-            raise
-        except Exception as e:
-            logger.error(f"Failed to get ticket: {e}", exc_info=True)
-            raise ValidationError("Failed to retrieve ticket")
+            return TicketService._format_ticket(ticket)
         finally:
             db.close()
     
+    
     @staticmethod
-    def update_ticket_status(ticket_id: str, new_status: str, admin_id: str) -> Dict[str, Any]:
-        """Update ticket status and log as event"""
+    def get_ticket_by_number(ticket_no: str) -> Dict[str, Any]:
+        """Get ticket by ticket number"""
         db = SessionLocal()
         try:
-            ticket = db.query(Ticket).filter(Ticket.id == UUID(ticket_id)).first()
+            ticket = db.query(Ticket).filter(Ticket.ticket_no == ticket_no).first()
+            if not ticket:
+                raise NotFoundError(f"Ticket {ticket_no} not found")
+            
+            return TicketService._format_ticket(ticket)
+        finally:
+            db.close()
+    
+    
+    @staticmethod
+    def _format_ticket(ticket) -> Dict[str, Any]:
+        """Format ticket object as dictionary"""
+        return {
+            "id": str(ticket.id),
+            "ticket_no": ticket.ticket_no,
+            "subject": ticket.subject,
+            "summary": ticket.summary,
+            "detailed_description": ticket.detailed_description,
+            "status": ticket.status,
+            "category": ticket.category,
+            "level": ticket.level,
+            "company_id": str(ticket.company_id),
+            "company_name": ticket.company.name if ticket.company else None,
+            "raised_by_user_id": str(ticket.raised_by_user_id),
+            "raised_by_user": {
+                "id": str(ticket.raised_by_user.id),
+                "name": ticket.raised_by_user.name,
+                "email": ticket.raised_by_user.email
+            } if ticket.raised_by_user else None,
+            "created_by": ticket.raised_by_user.name if ticket.raised_by_user else None,
+            "assigned_engineer_id": str(ticket.assigned_engineer_id) if ticket.assigned_engineer_id else None,
+            "assigned_engineer": {
+                "id": str(ticket.assigned_engineer.id),
+                "name": ticket.assigned_engineer.name,
+                "email": ticket.assigned_engineer.email
+            } if ticket.assigned_engineer else None,
+            "assigned_to": ticket.assigned_engineer.name if ticket.assigned_engineer else None,
+            "assigned_to_id": str(ticket.assigned_engineer_id) if ticket.assigned_engineer_id else None,
+            "created_at": ticket.created_at.isoformat(),
+            "updated_at": ticket.updated_at.isoformat(),
+            "closed_at": ticket.closed_at.isoformat() if ticket.closed_at else None,
+            "reopened_at": ticket.reopened_at.isoformat() if ticket.reopened_at else None,
+            "attachments": [
+                {
+                    "id": str(att.id),
+                    "type": att.type,
+                    "file_path": att.file_path,
+                    "mime_type": att.mime_type,
+                    "created_at": att.created_at.isoformat()
+                }
+                for att in ticket.attachments
+            ] if ticket.attachments else [],
+            "rca": {
+                "id": str(ticket.root_cause_analysis.id),
+                "root_cause_description": ticket.root_cause_analysis.root_cause_description,
+                "contributing_factors": ticket.root_cause_analysis.contributing_factors or [],
+                "prevention_measures": ticket.root_cause_analysis.prevention_measures,
+                "resolution_steps": ticket.root_cause_analysis.resolution_steps or [],
+                "related_ticket_ids": ticket.root_cause_analysis.related_ticket_ids or [],
+                "created_at": ticket.root_cause_analysis.created_at.isoformat(),
+                "updated_at": ticket.root_cause_analysis.updated_at.isoformat()
+            } if ticket.root_cause_analysis else None,
+            "resolution_note": {
+                "id": str(ticket.resolution_note.id),
+                "solution_description": ticket.resolution_note.solution_description,
+                "steps_taken": ticket.resolution_note.steps_taken or [],
+                "resources_used": ticket.resolution_note.resources_used or [],
+                "follow_up_notes": ticket.resolution_note.follow_up_notes,
+                "created_at": ticket.resolution_note.created_at.isoformat(),
+                "updated_at": ticket.resolution_note.updated_at.isoformat()
+            } if ticket.resolution_note else None,
+            "events": [
+                {
+                    "id": str(event.id),
+                    "event_type": event.event_type,
+                    "actor_user_id": str(event.actor_user_id),
+                    "actor": event.actor_user.name if event.actor_user else None,
+                    "payload": event.payload,
+                    "created_at": event.created_at.isoformat()
+                }
+                for event in ticket.events
+            ] if ticket.events else []
+        }
+    
+    @staticmethod
+    def update_ticket_status(
+        ticket_id: str,
+        new_status: str,
+        admin_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Update ticket status"""
+        db = SessionLocal()
+        try:
+            ticket_uuid = UUID(ticket_id)
+            
+            # Verify ticket exists
+            ticket = db.query(Ticket).filter(Ticket.id == ticket_uuid).first()
             if not ticket:
                 raise NotFoundError("Ticket not found")
             
@@ -88,163 +219,322 @@ class TicketService:
                 raise ValidationError(f"Invalid status. Must be one of: {', '.join(valid_statuses)}")
             
             old_status = ticket.status
-            if old_status == new_status:
-                raise ValidationError("Ticket already has this status")
+            logger.info(f"Updating ticket {ticket.ticket_no} status: {old_status} → {new_status}")
             
+            # Update status
             ticket.status = new_status
             ticket.updated_at = datetime.utcnow()
             
-            if new_status == "closed" and not ticket.closed_at:
+            if new_status == "closed":
                 ticket.closed_at = datetime.utcnow()
-            
-            if new_status == "reopened":
+            elif new_status == "reopened":
                 ticket.reopened_at = datetime.utcnow()
             
             db.flush()
             
-            actor_user_id = ticket.raised_by_user_id
-            try:
-                admin_uuid = UUID(admin_id)
-                admin_user = db.query(User).filter(User.id == admin_uuid).first()
-                if admin_user:
-                    actor_user_id = admin_uuid
-                else:
-                    logger.warning(f"Admin user {admin_id} not found, using ticket raiser instead")
-                    actor_user_id = ticket.raised_by_user_id
-            except ValueError:
-                logger.warning(f"Invalid admin UUID {admin_id}, using ticket raiser instead")
-                actor_user_id = ticket.raised_by_user_id
+            # Verify user for event logging
+            actual_user_id = ticket.raised_by_user_id
+            if admin_id:
+                try:
+                    user = db.query(User).filter(User.id == UUID(admin_id)).first()
+                    if user:
+                        actual_user_id = UUID(admin_id)
+                except Exception as e:
+                    logger.warning(f"Could not verify admin user: {e}, using ticket raiser")
             
-            status_event = TicketEvent(ticket_id=ticket.id, event_type="status_updated", actor_user_id=actor_user_id, payload={"from": old_status, "to": new_status, "old_status": old_status, "new_status": new_status})
+            # Create status update event
+            status_event = TicketEvent(
+                ticket_id=ticket_uuid,
+                event_type="status_updated",
+                actor_user_id=actual_user_id,
+                payload={
+                    "old_status": old_status,
+                    "new_status": new_status,
+                    "changed_at": datetime.utcnow().isoformat()
+                }
+            )
             db.add(status_event)
             db.commit()
             
-            try:
-                AdminAuditLog.create(admin_user_id=actor_user_id, action="ticket_status_updated", resource="ticket", resource_id=ticket_id, changes={"from": old_status, "to": new_status})
-            except Exception as e:
-                logger.warning(f"Failed to create audit log: {e}")
+            logger.info(f"✓ Ticket status updated: {ticket.ticket_no} now {new_status}")
             
-            logger.info(f"✓ Ticket {ticket.ticket_no} status updated: {old_status} → {new_status}")
-            return {"id": str(ticket.id), "ticket_no": ticket.ticket_no, "status": ticket.status, "updated_at": ticket.updated_at.isoformat()}
+            # Deprecate embeddings when ticket is closed or reopened
+            if new_status in ["closed", "reopened"]:
+                try:
+                    from .embedding_manager import EmbeddingManager
+                    EmbeddingManager.deprecate_ticket_embeddings(
+                        ticket_id=ticket_id,
+                        reason=f"ticket_{new_status}"
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to deprecate embeddings: {e}")
             
-        except (NotFoundError, ValidationError):
+            # Audit log
+            if admin_id:
+                try:
+                    AdminAuditLog.create(
+                        admin_user_id=UUID(admin_id),
+                        action="status_updated",
+                        resource="ticket",
+                        resource_id=ticket_id,
+                        changes={
+                            "ticket_no": ticket.ticket_no,
+                            "old_status": old_status,
+                            "new_status": new_status
+                        }
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to create audit log: {e}")
+            
+            return TicketService._format_ticket(ticket)
+            
+        except (ValidationError, NotFoundError):
             db.rollback()
             raise
         except Exception as e:
             db.rollback()
             logger.error(f"Failed to update ticket status: {e}")
-            raise ValidationError("Failed to update ticket")
+            raise ValidationError(f"Failed to update status: {str(e)}")
         finally:
             db.close()
     
+    
     @staticmethod
-    def assign_ticket(ticket_id: str, engineer_id: str, admin_id: str) -> Dict[str, Any]:
-        """Assign ticket to an engineer and log as event"""
+    def assign_ticket(
+        ticket_id: str,
+        engineer_id: str,
+        admin_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Assign ticket to engineer"""
         db = SessionLocal()
         try:
-            ticket = db.query(Ticket).filter(Ticket.id == UUID(ticket_id)).first()
+            ticket_uuid = UUID(ticket_id)
+            engineer_uuid = UUID(engineer_id)
+            
+            # Verify ticket exists
+            ticket = db.query(Ticket).filter(Ticket.id == ticket_uuid).first()
             if not ticket:
                 raise NotFoundError("Ticket not found")
             
-            actor_user_id = ticket.raised_by_user_id
-            try:
-                admin_uuid = UUID(admin_id)
-                admin_user = db.query(User).filter(User.id == admin_uuid).first()
-                if admin_user:
-                    actor_user_id = admin_uuid
-                else:
-                    logger.warning(f"Admin user {admin_id} not found, using ticket raiser instead")
-                    actor_user_id = ticket.raised_by_user_id
-            except ValueError:
-                logger.warning(f"Invalid admin UUID {admin_id}, using ticket raiser instead")
-                actor_user_id = ticket.raised_by_user_id
-            
-            if not engineer_id or engineer_id == "":
-                old_engineer = ticket.assigned_engineer.name if ticket.assigned_engineer else None
-                ticket.assigned_engineer_id = None
-                ticket.updated_at = datetime.utcnow()
-                db.flush()
-                
-                assign_event = TicketEvent(ticket_id=ticket.id, event_type="ticket_unassigned", actor_user_id=actor_user_id, payload={"previous_assignee": old_engineer, "action": "unassigned"})
-                db.add(assign_event)
-                db.commit()
-                
-                logger.info(f"✓ Ticket {ticket.ticket_no} unassigned")
-                return {"id": str(ticket.id), "ticket_no": ticket.ticket_no, "assigned_to": None, "assigned_to_id": None}
-            
-            engineer = db.query(User).filter(User.id == UUID(engineer_id)).first()
+            # Verify engineer exists
+            engineer = db.query(User).filter(User.id == engineer_uuid).first()
             if not engineer:
                 raise NotFoundError("Engineer not found")
             
-            old_engineer = ticket.assigned_engineer.name if ticket.assigned_engineer else None
-            ticket.assigned_engineer_id = UUID(engineer_id)
+            old_engineer_id = ticket.assigned_engineer_id
+            logger.info(f"Assigning ticket {ticket.ticket_no} to {engineer.name}")
+            
+            # Update assignment
+            ticket.assigned_engineer_id = engineer_uuid
             ticket.updated_at = datetime.utcnow()
             db.flush()
             
-            assign_event = TicketEvent(ticket_id=ticket.id, event_type="ticket_assigned", actor_user_id=actor_user_id, payload={"assigned_to": engineer.name, "assigned_to_id": str(engineer.id), "previous_assignee": old_engineer})
-            db.add(assign_event)
+            # Verify user for event logging
+            actual_user_id = ticket.raised_by_user_id
+            if admin_id:
+                try:
+                    user = db.query(User).filter(User.id == UUID(admin_id)).first()
+                    if user:
+                        actual_user_id = UUID(admin_id)
+                except Exception as e:
+                    logger.warning(f"Could not verify admin user: {e}, using ticket raiser")
+            
+            # Create assignment event
+            if old_engineer_id:
+                event_type = "ticket_assigned"
+            else:
+                event_type = "ticket_assigned"
+            
+            assignment_event = TicketEvent(
+                ticket_id=ticket_uuid,
+                event_type=event_type,
+                actor_user_id=actual_user_id,
+                payload={
+                    "assigned_to": engineer.name,
+                    "assigned_to_id": engineer_id,
+                    "previous_assignment": None,
+                    "assigned_at": datetime.utcnow().isoformat()
+                }
+            )
+            db.add(assignment_event)
             db.commit()
             
-            try:
-                AdminAuditLog.create(admin_user_id=actor_user_id, action="ticket_assigned", resource="ticket", resource_id=ticket_id, changes={"assigned_to": engineer.name, "previous_assignee": old_engineer})
-            except Exception as e:
-                logger.warning(f"Failed to create audit log: {e}")
+            logger.info(f"✓ Ticket assigned: {ticket.ticket_no} → {engineer.name}")
             
-            logger.info(f"✓ Ticket {ticket.ticket_no} assigned to {engineer.name}")
-            return {"id": str(ticket.id), "ticket_no": ticket.ticket_no, "assigned_to": engineer.name, "assigned_to_id": str(engineer.id)}
+            # Audit log
+            if admin_id:
+                try:
+                    AdminAuditLog.create(
+                        admin_user_id=UUID(admin_id),
+                        action="ticket_assigned",
+                        resource="ticket",
+                        resource_id=ticket_id,
+                        changes={
+                            "ticket_no": ticket.ticket_no,
+                            "assigned_to": engineer.name,
+                            "assigned_to_id": engineer_id
+                        }
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to create audit log: {e}")
             
-        except (NotFoundError, ValidationError):
+            return TicketService._format_ticket(ticket)
+            
+        except (ValidationError, NotFoundError):
             db.rollback()
             raise
         except Exception as e:
             db.rollback()
             logger.error(f"Failed to assign ticket: {e}")
-            raise ValidationError("Failed to assign ticket")
+            raise ValidationError(f"Failed to assign ticket: {str(e)}")
         finally:
             db.close()
     
     @staticmethod
-    def get_analytics(company_id: Optional[str] = None, days: int = 30) -> Dict[str, Any]:
-        """Get ticket analytics"""
+    def get_analytics(days: int = 30) -> Dict[str, Any]:
+        """
+        Get ticket analytics for the specified number of days.
+        
+        Args:
+            days: Number of days to analyze (default 30, max 365)
+            
+        Returns:
+            Dict containing analytics data:
+            - total_tickets: Total number of tickets
+            - tickets_by_status: Count of tickets by status
+            - tickets_by_level: Count of tickets by level
+            - tickets_by_category: Count of tickets by category
+            - tickets_created_last_n_days: Tickets created in the period
+            - avg_resolution_time: Average time to close tickets
+            - open_tickets_count: Number of open tickets
+            - closed_tickets_count: Number of closed tickets
+            - resolution_rate: Percentage of resolved tickets
+        """
         db = SessionLocal()
         try:
+            from datetime import timedelta
+            
+            # Calculate date range
+            now = datetime.utcnow()
+            start_date = now - timedelta(days=days)
+            
+            logger.info(f"Getting analytics for last {days} days (from {start_date} to {now})")
+            
+            # Base query for tickets
             query = db.query(Ticket)
-            if company_id:
-                query = query.filter(Ticket.company_id == UUID(company_id))
             
+            # Total tickets (all time)
             total_tickets = query.count()
-            open_tickets = query.filter(Ticket.status == "open").count()
-            in_progress = query.filter(Ticket.status == "in_progress").count()
-            resolved = query.filter(Ticket.status == "resolved").count()
-            closed = query.filter(Ticket.status == "closed").count()
             
-            cutoff_date = datetime.utcnow() - timedelta(days=days)
-            recent_tickets = query.filter(Ticket.created_at >= cutoff_date).count()
+            # Tickets by status
+            tickets_by_status = {}
+            for status in ["open", "in_progress", "resolved", "closed", "reopened"]:
+                count = query.filter(Ticket.status == status).count()
+                if count > 0:
+                    tickets_by_status[status] = count
             
-            categories = {}
-            for ticket in query.all():
-                cat = ticket.category or "Uncategorized"
-                categories[cat] = categories.get(cat, 0) + 1
+            # Tickets by level
+            tickets_by_level = {}
+            for level in ["level-1", "level-2", "level-3"]:
+                count = query.filter(Ticket.level == level).count()
+                if count > 0:
+                    tickets_by_level[level] = count
             
-            levels = {}
-            for ticket in query.all():
-                lvl = ticket.level or "Normal"
-                levels[lvl] = levels.get(lvl, 0) + 1
+            # Tickets by category
+            tickets_by_category = {}
+            categories = db.query(Ticket.category).distinct().filter(
+                Ticket.category.isnot(None)
+            ).all()
+            for (category,) in categories:
+                if category:
+                    count = query.filter(Ticket.category == category).count()
+                    tickets_by_category[category] = count
             
-            closed_tickets = query.filter(Ticket.status == "closed").all()
+            # Tickets created in the last N days
+            tickets_created_last_n_days = query.filter(
+                Ticket.created_at >= start_date
+            ).count()
+            
+            # Closed tickets in the last N days
+            closed_last_n_days = query.filter(
+                Ticket.closed_at >= start_date,
+                Ticket.closed_at.isnot(None)
+            ).count()
+            
+            # Open tickets count
+            open_tickets = query.filter(
+                Ticket.status.in_(["open", "in_progress"])
+            ).count()
+            
+            # Closed tickets count (all time)
+            closed_tickets = query.filter(
+                Ticket.status.in_(["closed", "resolved"])
+            ).count()
+            
+            # Average resolution time
             avg_resolution_time = 0
-            if closed_tickets:
-                total_time = 0
-                for ticket in closed_tickets:
-                    if ticket.created_at and ticket.closed_at:
-                        delta = (ticket.closed_at - ticket.created_at).total_seconds()
-                        total_time += delta
-                avg_resolution_time = int(total_time / len(closed_tickets) / 3600)
+            if closed_tickets > 0:
+                closed_ticket_times = []
+                closed_tickets_query = query.filter(
+                    Ticket.closed_at.isnot(None)
+                ).all()
+                
+                for ticket in closed_tickets_query:
+                    if ticket.closed_at and ticket.created_at:
+                        resolution_time = (ticket.closed_at - ticket.created_at).total_seconds()
+                        closed_ticket_times.append(resolution_time)
+                
+                if closed_ticket_times:
+                    avg_resolution_time = sum(closed_ticket_times) / len(closed_ticket_times)
+                    # Convert to hours
+                    avg_resolution_time = round(avg_resolution_time / 3600, 2)
             
-            return {"total_tickets": total_tickets, "open_tickets": open_tickets, "in_progress": in_progress, "resolved": resolved, "closed": closed, "recent_tickets": recent_tickets, "categories": categories, "levels": levels, "avg_resolution_time_hours": avg_resolution_time}
+            # Resolution rate
+            resolution_rate = 0
+            if total_tickets > 0:
+                resolution_rate = round((closed_tickets / total_tickets) * 100, 2)
+            
+            # Ticket trends (daily count for last N days)
+            trends = []
+            current_date = start_date.date()
+            end_date = now.date()
+            
+            while current_date <= end_date:
+                day_start = datetime.combine(current_date, datetime.min.time())
+                day_end = datetime.combine(current_date, datetime.max.time())
+                
+                daily_count = query.filter(
+                    Ticket.created_at >= day_start,
+                    Ticket.created_at <= day_end
+                ).count()
+                
+                if daily_count > 0:
+                    trends.append({
+                        "date": current_date.isoformat(),
+                        "count": daily_count
+                    })
+                
+                current_date += timedelta(days=1)
+            
+            logger.info(f"Analytics retrieved: {total_tickets} total, {open_tickets} open, {closed_tickets} closed")
+            
+            return {
+                "total_tickets": total_tickets,
+                "open_tickets": open_tickets,
+                "closed_tickets": closed_tickets,
+                "tickets_by_status": tickets_by_status,
+                "tickets_by_level": tickets_by_level,
+                "tickets_by_category": tickets_by_category,
+                "tickets_created_last_n_days": tickets_created_last_n_days,
+                "closed_last_n_days": closed_last_n_days,
+                "avg_resolution_time_hours": avg_resolution_time,
+                "resolution_rate_percent": resolution_rate,
+                "analysis_period_days": days,
+                "trends": trends
+            }
             
         except Exception as e:
-            logger.error(f"Failed to get analytics: {e}")
-            raise ValidationError("Failed to retrieve analytics")
+            logger.error(f"Failed to retrieve analytics: {e}")
+            raise ValidationError(f"Failed to retrieve analytics: {str(e)}")
         finally:
             db.close()

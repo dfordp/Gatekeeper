@@ -62,7 +62,7 @@ export default function TicketTimeline({ events }: TicketTimelineProps) {
               {/* Timeline Line */}
               <div className="flex flex-col items-center">
                 <div className="p-2 bg-gray-100 rounded-full">
-                  {eventIcons[event.type] || eventIcons.default}
+                  {eventIcons[event.event_type] || eventIcons.default}
                 </div>
                 {index < sortedEvents.length - 1 && (
                   <div className="w-0.5 h-12 bg-gray-200 mt-2" />
@@ -80,7 +80,7 @@ export default function TicketTimeline({ events }: TicketTimelineProps) {
                   </p>
                 </div>
                 <p className="text-sm text-gray-600 mb-2">
-                  {formatEventDescription(event)}
+                  {formatEventDescription(event.event_type)}
                 </p>
                 {event.payload && Object.keys(event.payload).length > 0 && (
                   <div className="mt-2 p-2 bg-gray-50 rounded text-xs text-gray-600">
@@ -96,41 +96,41 @@ export default function TicketTimeline({ events }: TicketTimelineProps) {
   )
 }
 
-function formatEventDescription(event: TicketEvent): string {
-  const { type, payload } = event
+function formatEventDescription(type: string | undefined) {
+  if (!type) {
+    return "System event"
+  }
   
   switch (type) {
     case "ticket_created":
       return "Created ticket"
-    case "ticket_updated":
-      return "Updated ticket details"
-    case "status_updated":
-      return `Changed status from ${payload?.from || "unknown"} to ${payload?.to || "unknown"}`
     case "attachment_added":
-      return `Added attachment: ${payload?.file_name || "unknown file"}`
-    case "attachment_deleted":
-      return `Deleted attachment: ${payload?.file_name || "unknown file"}`
+      return "Added attachment"
     case "rca_added":
-      return "Added Root Cause Analysis"
+      return "Added root cause analysis"
     case "rca_updated":
-      return "Updated Root Cause Analysis"
+      return "Updated root cause analysis"
+    case "status_updated":
+      return "Updated status"
     case "ticket_assigned":
-      return `Assigned to ${payload?.assigned_to || "unknown"}`
-    case "ticket_unassigned":
-      return `Unassigned from ${payload?.previous_assignee || "unknown"}`
+      return "Assigned ticket"
+    case "ticket_deleted":
+      return "Deleted ticket"
+    case "resolution_added":
+      return "Added resolution"
     case "comment_added":
       return "Added a comment"
     default:
-      return type.replace(/_/g, " ")
+      return type?.replace(/_/g, " ") || "System event"
   }
 }
 
 function formatPayload(event: TicketEvent): string {
   if (!event.payload) return ""
   
-  const { type, payload } = event
+  const { event_type, payload } = event
 
-  switch (type) {
+  switch (event_type) {
     case "attachment_added":
       const { file_name, file_size, type: attachType } = payload
       const sizeStr = file_size ? `${(Number(file_size) / 1024).toFixed(2)} KB` : "unknown size"

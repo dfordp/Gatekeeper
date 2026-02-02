@@ -1,14 +1,13 @@
 // client/types/index.ts
 
 export interface TicketEvent {
-  actor_name: string
   id: string
-  type: string
+  event_type: string
+  actor_user_id: string
   actor: string | null
   payload: Record<string, unknown>
   created_at: string
 }
-
 export interface TicketDetail {
   id: string
   ticket_no: string

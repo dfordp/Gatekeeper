@@ -26,9 +26,12 @@ TELEGRAM_TOKEN = TELEGRAM_BOT_TOKEN  # Alias for compatibility
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}" if TELEGRAM_BOT_TOKEN else None
 
 # Groq AI
+# In server/core/config.py, update the vision model line:
+
+# Groq AI
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-MODEL = os.getenv("GROQ_MODEL", "mixtral-8x7b-32768")
-VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "llama-2-90b-vision")
+MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant-on_demand")
+VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
 
 # OpenAI
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")

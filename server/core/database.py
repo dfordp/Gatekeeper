@@ -101,6 +101,8 @@ class Ticket(Base):
     embeddings = relationship("Embedding", back_populates="ticket", cascade="all, delete-orphan")
     root_cause_analysis = relationship("RootCauseAnalysis", uselist=False, back_populates="ticket", cascade="all, delete-orphan")
     resolution_note = relationship("ResolutionNote", uselist=False, back_populates="ticket", cascade="all, delete-orphan")
+    similar_issues_as_newer = relationship("SimilarIssues", foreign_keys="SimilarIssues.newer_ticket_id", back_populates="newer_ticket")
+    similar_issues_as_older = relationship("SimilarIssues", foreign_keys="SimilarIssues.older_ticket_id", back_populates="older_ticket")
     
     __table_args__ = (
         Index("idx_ticket_company", "company_id"),
@@ -271,6 +273,29 @@ class Embedding(Base):
     
     def __repr__(self):
         return f"<Embedding {self.id}>"
+
+
+class SimilarIssues(Base):
+    """Similar Issues mapping - tracks semantic similarity between tickets"""
+    __tablename__ = "similar_issues"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    newer_ticket_id = Column(UUID(as_uuid=True), ForeignKey("ticket.id"), nullable=False, index=True)
+    older_ticket_id = Column(UUID(as_uuid=True), ForeignKey("ticket.id"), nullable=False, index=True)
+    similarity_score = Column(Integer, nullable=False)  # 0-100 score
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    
+    newer_ticket = relationship("Ticket", foreign_keys=[newer_ticket_id], back_populates="similar_issues_as_newer")
+    older_ticket = relationship("Ticket", foreign_keys=[older_ticket_id], back_populates="similar_issues_as_older")
+    
+    __table_args__ = (
+        Index("idx_similar_newer_ticket", "newer_ticket_id"),
+        Index("idx_similar_older_ticket", "older_ticket_id"),
+        Index("idx_similar_score", "similarity_score"),
+    )
+    
+    def __repr__(self):
+        return f"<SimilarIssues {self.newer_ticket_id} -> {self.older_ticket_id}>"
 
 
 class AdminUser(Base):

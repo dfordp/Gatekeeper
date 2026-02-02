@@ -1,14 +1,29 @@
 # server/services/ticket_creation_service.py
-"""Comprehensive ticket creation service with attachments and RCA support"""
-from typing import Dict, Any, Optional, List
-from uuid import UUID
+"""
+Ticket Creation Service - Delegates to existing services with task queue tracking
+
+Handles ticket creation, attachments, RCA, and resolution notes.
+Uses existing services:
+- EmbeddingManager: Embedding lifecycle management
+- AttachmentProcessor: Attachment processing with Grok Vision
+- TicketRequestQueue: Task status tracking for frontend polling
+"""
+
+import logging
+import sys
+import os
+from typing import Optional, List, Dict, Any
 from datetime import datetime
-import uuid as uuid_lib
+from uuid import UUID
 
 from core.database import (
-    SessionLocal, Ticket, TicketEvent, Attachment, AdminAuditLog, 
-    RootCauseAnalysis, ResolutionNote, User, Company
+    SessionLocal, Ticket, TicketEvent, RootCauseAnalysis, ResolutionNote,
+    Attachment, AdminAuditLog, Company, User
 )
+from .embedding_manager import EmbeddingManager
+from .attachment_processor import AttachmentProcessor
+from .ticket_request_queue import TicketRequestQueue, TaskType, TaskStatus
+
 from utils.exceptions import ValidationError, NotFoundError, ConflictError
 from core.logger import get_logger
 
@@ -16,31 +31,26 @@ logger = get_logger(__name__)
 
 
 class TicketCreationService:
-    """Service for creating and managing tickets"""
-
+    """Service for ticket creation and management with task queue tracking"""
+    
     @staticmethod
     def get_next_ticket_number() -> str:
-        """Get next sequential ticket number based on largest in DB"""
+        """Get the next ticket number"""
         db = SessionLocal()
         try:
-            latest_ticket = db.query(Ticket).order_by(Ticket.ticket_no.desc()).first()
+            latest_ticket = db.query(Ticket).order_by(Ticket.created_at.desc()).first()
             
             if not latest_ticket:
                 return "TKT-000001"
             
-            try:
-                last_num = int(latest_ticket.ticket_no.split('-')[1])
-                next_num = last_num + 1
-                return f"TKT-{str(next_num).zfill(6)}"
-            except (IndexError, ValueError):
-                return f"TKT-{uuid_lib.uuid4().hex[:8].upper()}"
+            ticket_no = latest_ticket.ticket_no
+            number = int(ticket_no.split('-')[-1])
+            next_number = number + 1
+            
+            return f"TKT-{str(next_number).zfill(6)}"
         finally:
             db.close()
-        
-    @staticmethod
-    def generate_ticket_number() -> str:
-        """Generate unique ticket number"""
-        return f"TKT-{uuid_lib.uuid4().hex[:8].upper()}"
+    
     
     @staticmethod
     def create_ticket(
@@ -58,7 +68,8 @@ class TicketCreationService:
         status: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Create a new ticket with full validation.
+        Create a new ticket with full validation and task queue tracking.
+        Immediately queues embedding creation task.
         """
         db = SessionLocal()
         try:
@@ -103,7 +114,6 @@ class TicketCreationService:
             else:
                 ticket_no = TicketCreationService.get_next_ticket_number()
             
-            # Use provided status or default to "open"
             initial_status = status if status in ["open", "in_progress", "resolved", "closed", "reopened"] else "open"
             
             # Create ticket
@@ -121,6 +131,16 @@ class TicketCreationService:
                 created_at=created_at or datetime.utcnow(),
                 attachment_ids=[]
             )
+            
+            # Set closed_at if status is closed
+            if initial_status == "closed" and created_at:
+                try:
+                    if isinstance(created_at, str):
+                        ticket.closed_at = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                    else:
+                        ticket.closed_at = created_at
+                except Exception as e:
+                    logger.warning(f"Failed to parse closed_at date: {e}")
             
             db.add(ticket)
             db.flush()
@@ -162,6 +182,43 @@ class TicketCreationService:
             
             logger.info(f"✓ Ticket created: {ticket_no}")
             
+            # Queue embedding creation task
+            try:
+                task_id = TicketRequestQueue.queue_task(
+                    ticket_id=str(ticket.id),
+                    task_type=TaskType.EMBEDDING_CREATION,
+                    payload={
+                        "subject": subject.strip(),
+                        "description": detailed_description.strip(),
+                        "category": category,
+                        "summary": summary,
+                        "company_id": company_id
+                    }
+                )
+                logger.info(f"✓ Task queued for embeddings: {task_id}")
+            except Exception as e:
+                logger.warning(f"Failed to queue embedding task: {e}")
+            
+            # Create embeddings synchronously using EmbeddingManager
+            try:
+                EmbeddingManager.create_ticket_embeddings(
+                    ticket_id=str(ticket.id),
+                    company_id=company_id,
+                    subject=subject.strip(),
+                    description=detailed_description.strip(),
+                    category=category,
+                    summary=summary
+                )
+                logger.info(f"✓ Embeddings created for ticket {ticket_no}")
+                
+                # Mark embedding task as completed
+                if 'task_id' in locals():
+                    TicketRequestQueue.mark_completed(task_id)
+            except Exception as e:
+                logger.warning(f"Failed to create embeddings for ticket: {e}")
+                if 'task_id' in locals():
+                    TicketRequestQueue.mark_failed(task_id, str(e))
+            
             return {
                 "id": str(ticket.id),
                 "ticket_no": ticket.ticket_no,
@@ -180,159 +237,56 @@ class TicketCreationService:
             raise
         except Exception as e:
             db.rollback()
-            logger.error(f"Failed to create ticket: {e}")
+            logger.error(f"Unexpected error creating ticket: {e}")
             raise ValidationError(f"Failed to create ticket: {str(e)}")
         finally:
             db.close()
     
-    @staticmethod
-    def update_ticket(
-        ticket_id: str,
-        subject: Optional[str] = None,
-        summary: Optional[str] = None,
-        detailed_description: Optional[str] = None,
-        category: Optional[str] = None,
-        level: Optional[str] = None,
-        actor_user_id: Optional[str] = None,
-        admin_id: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """Update ticket details and log as event"""
-        db = SessionLocal()
-        try:
-            ticket = db.query(Ticket).filter(Ticket.id == UUID(ticket_id)).first()
-            if not ticket:
-                raise NotFoundError("Ticket not found")
-            
-            changes = {}
-            
-            if subject and len(subject.strip()) >= 3:
-                if subject.strip() != ticket.subject:
-                    changes["subject"] = {"from": ticket.subject, "to": subject.strip()}
-                    ticket.subject = subject.strip()
-            
-            if summary:
-                if summary.strip() != (ticket.summary or ""):
-                    changes["summary"] = {"from": ticket.summary, "to": summary.strip()}
-                    ticket.summary = summary.strip()
-            
-            if detailed_description and len(detailed_description.strip()) >= 10:
-                if detailed_description.strip() != ticket.detailed_description:
-                    changes["detailed_description"] = {"from": ticket.detailed_description[:100], "to": detailed_description[:100]}
-                    ticket.detailed_description = detailed_description.strip()
-            
-            if category:
-                if category.strip() != (ticket.category or ""):
-                    changes["category"] = {"from": ticket.category, "to": category.strip()}
-                    ticket.category = category.strip()
-            
-            if level:
-                valid_levels = ["level-1", "level-2", "level-3"]
-                if level not in valid_levels:
-                    raise ValidationError(f"Invalid level. Must be one of: {', '.join(valid_levels)}")
-                if level != ticket.level:
-                    changes["level"] = {"from": ticket.level, "to": level}
-                    ticket.level = level
-            
-            if not changes:
-                raise ValidationError("No fields to update")
-            
-            ticket.updated_at = datetime.utcnow()
-            db.flush()
-            
-            # Log ticket update event
-            actor_uuid = UUID(actor_user_id) if actor_user_id else ticket.raised_by_user_id
-            event = TicketEvent(
-                ticket_id=ticket.id,
-                event_type="ticket_updated",
-                actor_user_id=actor_uuid,
-                payload={
-                    "changes": changes,
-                    "updated_at": ticket.updated_at.isoformat()
-                }
-            )
-            db.add(event)
-            db.commit()
-            
-            # Audit log
-            if admin_id:
-                try:
-                    AdminAuditLog.create(
-                        admin_user_id=UUID(admin_id),
-                        action="ticket_updated",
-                        resource="ticket",
-                        resource_id=ticket_id,
-                        changes=changes
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to create audit log: {e}")
-            
-            logger.info(f"✓ Ticket {ticket.ticket_no} updated")
-            
-            return {
-                "id": str(ticket.id),
-                "ticket_no": ticket.ticket_no,
-                "subject": ticket.subject,
-                "summary": ticket.summary,
-                "detailed_description": ticket.detailed_description,
-                "category": ticket.category,
-                "level": ticket.level,
-                "updated_at": ticket.updated_at.isoformat()
-            }
-            
-        except (NotFoundError, ValidationError):
-            db.rollback()
-            raise
-        except Exception as e:
-            db.rollback()
-            logger.error(f"Failed to update ticket: {e}")
-            raise ValidationError(f"Failed to update ticket: {str(e)}")
-        finally:
-            db.close()
     
     @staticmethod
     def add_attachment(
         ticket_id: str,
-        file_path: str,
         file_name: str,
-        attachment_type: str,
+        file_path: str,
         mime_type: Optional[str] = None,
-        file_size: Optional[int] = None,
+        attachment_type: str = "document",
         cloudinary_url: Optional[str] = None,
+        file_size: int = 0,
         created_by_user_id: Optional[str] = None,
         admin_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Add attachment to ticket and log as event"""
+        """
+        Add attachment to ticket with task queue tracking.
+        Processes attachment synchronously and updates task status on completion.
+        """
         db = SessionLocal()
+        task_id = None
+        
         try:
-            ticket = db.query(Ticket).filter(Ticket.id == UUID(ticket_id)).first()
-            if not ticket:
-                raise NotFoundError("Ticket not found")
+            ticket_uuid = UUID(ticket_id)
             
-            valid_types = ["image", "document", "log", "code", "other"]
-            if attachment_type not in valid_types:
-                raise ValidationError(f"Invalid attachment type. Must be one of: {', '.join(valid_types)}")
+            # Verify ticket exists
+            ticket = db.query(Ticket).filter(Ticket.id == ticket_uuid).first()
+            if not ticket:
+                raise NotFoundError(f"Ticket {ticket_id} not found")
+            
+            logger.info(f"Adding attachment to ticket {ticket.ticket_no}: {file_name}")
             
             # Create attachment
             attachment = Attachment(
-                ticket_id=UUID(ticket_id),
+                ticket_id=ticket_uuid,
                 type=attachment_type,
-                file_path=file_path,
+                file_path=cloudinary_url or file_path,
                 mime_type=mime_type
             )
             
             db.add(attachment)
             db.flush()
             
-            # Update ticket's attachment_ids
-            if not ticket.attachment_ids:
-                ticket.attachment_ids = []
-            ticket.attachment_ids.append(str(attachment.id))
-            ticket.updated_at = datetime.utcnow()
-            
-            # Log attachment event (separate event)
+            # Log attachment event
             actor_uuid = UUID(created_by_user_id) if created_by_user_id else ticket.raised_by_user_id
             attachment_event = TicketEvent(
-                ticket_id=UUID(ticket_id),
+                ticket_id=ticket_uuid,
                 event_type="attachment_added",
                 actor_user_id=actor_uuid,
                 payload={
@@ -368,6 +322,46 @@ class TicketCreationService:
             
             logger.info(f"✓ Attachment added to ticket {ticket.ticket_no}: {file_name}")
             
+            # Queue attachment processing task
+            try:
+                task_id = TicketRequestQueue.queue_task(
+                    ticket_id=ticket_id,
+                    task_type=TaskType.ATTACHMENT_PROCESSING,
+                    payload={
+                        "attachment_id": str(attachment.id),
+                        "file_name": file_name,
+                        "mime_type": mime_type,
+                        "ticket_subject": ticket.subject
+                    }
+                )
+                logger.info(f"✓ Task queued for attachment processing: {task_id}")
+                TicketRequestQueue.mark_processing(task_id)
+            except Exception as e:
+                logger.warning(f"Failed to queue attachment task: {e}")
+            
+            # Process attachment using AttachmentProcessor
+            embedding_count = 0
+            try:
+                embedding_count = AttachmentProcessor.process_attachment(
+                    attachment_id=str(attachment.id),
+                    ticket_id=ticket_id,
+                    company_id=str(ticket.company_id),
+                    mime_type=mime_type,
+                    ticket_subject=ticket.subject,
+                    ticket_description=ticket.detailed_description
+                )
+                logger.info(f"✓ Processed attachment with {embedding_count} embeddings")
+                
+                # Mark task as completed
+                if task_id:
+                    TicketRequestQueue.mark_completed(task_id)
+                    logger.info(f"✓ Task {task_id} marked as completed")
+            except Exception as e:
+                logger.warning(f"Failed to process attachment: {e}")
+                if task_id:
+                    TicketRequestQueue.mark_failed(task_id, str(e))
+                    logger.error(f"✓ Task {task_id} marked as failed: {e}")
+            
             return {
                 "id": str(attachment.id),
                 "ticket_id": ticket_id,
@@ -375,18 +369,126 @@ class TicketCreationService:
                 "type": attachment.type,
                 "file_path": attachment.file_path,
                 "mime_type": attachment.mime_type,
+                "embeddings_created": embedding_count,
+                "task_id": task_id,
                 "created_at": attachment.created_at.isoformat()
             }
             
-        except (ValidationError, NotFoundError):
+        except (NotFoundError, ValidationError):
+            if task_id:
+                TicketRequestQueue.mark_failed(task_id, str(e))
             db.rollback()
             raise
         except Exception as e:
+            if task_id:
+                TicketRequestQueue.mark_failed(task_id, str(e))
             db.rollback()
             logger.error(f"Failed to add attachment: {e}")
             raise ValidationError(f"Failed to add attachment: {str(e)}")
         finally:
             db.close()
+
+    
+    @staticmethod
+    def delete_attachment(
+        ticket_id: str,
+        attachment_id: str,
+        admin_id: Optional[str] = None
+    ) -> bool:
+        """Delete attachment from ticket - delegates to AttachmentProcessor"""
+        db = SessionLocal()
+        try:
+            ticket_uuid = UUID(ticket_id)
+            attachment_uuid = UUID(attachment_id)
+            
+            # Verify ticket exists
+            ticket = db.query(Ticket).filter(Ticket.id == ticket_uuid).first()
+            if not ticket:
+                raise NotFoundError(f"Ticket {ticket_id} not found")
+            
+            # Get attachment
+            attachment = db.query(Attachment).filter(
+                Attachment.id == attachment_uuid,
+                Attachment.ticket_id == ticket_uuid
+            ).first()
+            
+            if not attachment:
+                raise NotFoundError(f"Attachment {attachment_id} not found")
+            
+            logger.info(f"Deleting attachment {attachment_id} from ticket {ticket.ticket_no}")
+            
+            # Delete from Cloudinary if applicable
+            if attachment.file_path and attachment.file_path.startswith("http"):
+                try:
+                    import cloudinary
+                    import cloudinary.uploader
+                    from core.config import CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET
+                    
+                    if all([CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET]):
+                        cloudinary.config(
+                            cloud_name=CLOUDINARY_CLOUD_NAME,
+                            api_key=CLOUDINARY_API_KEY,
+                            api_secret=CLOUDINARY_API_SECRET
+                        )
+                        public_id = attachment.file_path.split('/')[-1].split('.')[0]
+                        cloudinary.uploader.destroy(f"tickets/{public_id}")
+                        logger.info(f"✓ Deleted from Cloudinary: {public_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete from Cloudinary: {e}")
+            
+            # Log deletion event
+            deletion_event = TicketEvent(
+                ticket_id=ticket_uuid,
+                event_type="attachment_deleted",
+                actor_user_id=ticket.raised_by_user_id,
+                payload={
+                    "attachment_id": str(attachment.id),
+                    "file_name": attachment.file_path.split('/')[-1] if attachment.file_path else "unknown"
+                }
+            )
+            
+            # Delete from database
+            db.delete(attachment)
+            db.add(deletion_event)
+            db.commit()
+            
+            # Audit log
+            if admin_id:
+                try:
+                    AdminAuditLog.create(
+                        admin_user_id=UUID(admin_id),
+                        action="attachment_deleted",
+                        resource="attachment",
+                        resource_id=str(attachment.id),
+                        changes={"ticket_id": ticket_id}
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to create audit log: {e}")
+            
+            logger.info(f"✓ Attachment deleted: {attachment_id}")
+            
+            # Deprecate embeddings using AttachmentProcessor
+            try:
+                AttachmentProcessor.deprecate_attachment(
+                    attachment_id=attachment_id,
+                    reason="attachment_deleted"
+                )
+                logger.info(f"✓ Deprecated embeddings for attachment {attachment_id}")
+            except Exception as e:
+                logger.warning(f"Failed to deprecate attachment embeddings: {e}")
+            
+            return True
+            
+        except (NotFoundError, ValidationError):
+            db.rollback()
+            raise
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Failed to delete attachment: {e}")
+            raise ValidationError(f"Failed to delete attachment: {str(e)}")
+        finally:
+            db.close()
+    
     
     @staticmethod
     def add_root_cause_analysis(
@@ -400,10 +502,15 @@ class TicketCreationService:
         ticket_closed_at: Optional[str] = None,
         admin_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Add or update Root Cause Analysis and log as separate event"""
+        """
+        Add or update Root Cause Analysis with task queue tracking.
+        Processes RCA embeddings synchronously and updates task status.
+        """
         db = SessionLocal()
+        task_id = None
+        
         try:
-            logger.info(f"Adding/updating RCA for ticket {ticket_id}, user {created_by_user_id}")
+            logger.info(f"Adding/updating RCA for ticket {ticket_id}")
             
             # Verify ticket exists
             try:
@@ -414,12 +521,11 @@ class TicketCreationService:
                     raise NotFoundError("Ticket not found")
                 logger.info(f"✓ Ticket found: {ticket.ticket_no}")
             except ValueError as e:
-                logger.error(f"Invalid ticket UUID: {ticket_id}, error: {e}")
+                logger.error(f"Invalid ticket UUID: {ticket_id}")
                 raise ValidationError(f"Invalid ticket ID format: {str(e)}")
             
-            # Validate root cause description FIRST
+            # Validate root cause description
             if not root_cause_description or len(root_cause_description.strip()) < 10:
-                logger.warning(f"Root cause description too short: '{root_cause_description}'")
                 raise ValidationError("Root cause description must be at least 10 characters")
             
             # Verify creator user exists, fallback to ticket raiser if not
@@ -431,13 +537,10 @@ class TicketCreationService:
                     logger.info(f"✓ User found: {user.name}")
                     actual_creator_id = user_uuid
                 else:
-                    logger.warning(f"User {created_by_user_id} not found, using ticket raiser instead")
+                    logger.warning(f"User {created_by_user_id} not found, using ticket raiser")
                     actual_creator_id = ticket.raised_by_user_id
-            except ValueError as e:
-                logger.warning(f"Invalid user UUID format: {created_by_user_id}, using ticket raiser")
-                actual_creator_id = ticket.raised_by_user_id
-            except Exception as e:
-                logger.warning(f"Failed to verify user, using ticket raiser: {e}")
+            except (ValueError, Exception):
+                logger.warning(f"Invalid user UUID, using ticket raiser")
                 actual_creator_id = ticket.raised_by_user_id
             
             # Check if RCA already exists
@@ -447,8 +550,7 @@ class TicketCreationService:
             
             is_update = False
             if existing_rca:
-                # Update existing RCA
-                logger.info(f"RCA already exists for {ticket.ticket_no}, updating it")
+                logger.info(f"RCA already exists, updating it")
                 existing_rca.root_cause_description = root_cause_description.strip()
                 existing_rca.contributing_factors = contributing_factors or []
                 existing_rca.prevention_measures = prevention_measures.strip() if prevention_measures else None
@@ -457,9 +559,7 @@ class TicketCreationService:
                 rca = existing_rca
                 is_update = True
                 db.flush()
-                logger.info(f"✓ RCA updated: {rca.id}")
             else:
-                # Create new RCA
                 rca = RootCauseAnalysis(
                     ticket_id=ticket_uuid,
                     root_cause_description=root_cause_description.strip(),
@@ -469,12 +569,10 @@ class TicketCreationService:
                     resolution_steps=resolution_steps or [],
                     related_ticket_ids=related_ticket_ids or []
                 )
-                logger.info(f"RCA object created with creator_id={actual_creator_id}")
                 db.add(rca)
                 db.flush()
-                logger.info(f"✓ RCA created: {rca.id}")
             
-            # Log RCA event (separate event)
+            # Log RCA event
             event_type = "rca_updated" if is_update else "rca_added"
             rca_event = TicketEvent(
                 ticket_id=ticket_uuid,
@@ -490,7 +588,7 @@ class TicketCreationService:
             )
             db.add(rca_event)
             db.commit()
-            logger.info(f"✓ RCA event committed successfully")
+            logger.info(f"✓ RCA event committed")
             
             # Audit log
             if admin_id:
@@ -512,6 +610,43 @@ class TicketCreationService:
             
             logger.info(f"✓ RCA {'updated' if is_update else 'added'} to ticket {ticket.ticket_no}")
             
+            # Queue RCA embedding task
+            try:
+                task_id = TicketRequestQueue.queue_task(
+                    ticket_id=ticket_id,
+                    task_type=TaskType.RCA_CREATION,
+                    payload={
+                        "rca_id": str(rca.id),
+                        "root_cause": root_cause_description.strip(),
+                        "factors": contributing_factors or [],
+                        "measures": prevention_measures
+                    }
+                )
+                logger.info(f"✓ Task queued for RCA embeddings: {task_id}")
+                TicketRequestQueue.mark_processing(task_id)
+            except Exception as e:
+                logger.warning(f"Failed to queue RCA task: {e}")
+            
+            # Update embeddings using EmbeddingManager
+            try:
+                EmbeddingManager.add_rca_embedding(
+                    ticket_id=ticket_id,
+                    company_id=str(ticket.company_id),
+                    root_cause_description=root_cause_description.strip(),
+                    contributing_factors=contributing_factors,
+                    prevention_measures=prevention_measures
+                )
+                logger.info(f"✓ RCA embeddings created/updated")
+                
+                # Mark task as completed
+                if task_id:
+                    TicketRequestQueue.mark_completed(task_id)
+                    logger.info(f"✓ Task {task_id} marked as completed")
+            except Exception as e:
+                logger.warning(f"Failed to update RCA embeddings: {e}")
+                if task_id:
+                    TicketRequestQueue.mark_failed(task_id, str(e))
+            
             return {
                 "id": str(rca.id),
                 "ticket_id": ticket_id,
@@ -521,115 +656,25 @@ class TicketCreationService:
                 "resolution_steps": rca.resolution_steps,
                 "related_ticket_ids": rca.related_ticket_ids,
                 "ticket_closed_at": ticket_closed_at,
+                "task_id": task_id,
                 "created_at": rca.created_at.isoformat(),
                 "is_update": is_update
             }
                     
         except (ValidationError, NotFoundError):
+            if task_id:
+                TicketRequestQueue.mark_failed(task_id, str(e))
             db.rollback()
-            logger.info(f"Caught expected exception, rolling back")
             raise
         except Exception as e:
+            if task_id:
+                TicketRequestQueue.mark_failed(task_id, str(e))
             db.rollback()
-            logger.error(f"Unexpected error adding RCA: {e}", exc_info=True)
+            logger.error(f"Unexpected error in add_root_cause_analysis: {e}")
             raise ValidationError(f"Failed to add RCA: {str(e)}")
         finally:
             db.close()
     
-    @staticmethod
-    def delete_attachment(ticket_id: str, attachment_id: str, actor_user_id: Optional[str] = None, admin_id: Optional[str] = None) -> Dict[str, Any]:
-        """Delete attachment from ticket and log as event"""
-        db = SessionLocal()
-        try:
-            # Validate UUIDs
-            try:
-                ticket_uuid = UUID(ticket_id)
-                attachment_uuid = UUID(attachment_id)
-            except ValueError:
-                raise NotFoundError("Invalid ticket or attachment ID format")
-            
-            # Verify ticket exists
-            ticket = db.query(Ticket).filter(Ticket.id == ticket_uuid).first()
-            if not ticket:
-                raise NotFoundError("Ticket not found")
-            
-            # Get attachment - ensure it belongs to the ticket
-            attachment = db.query(Attachment).filter(
-                Attachment.id == attachment_uuid,
-                Attachment.ticket_id == ticket_uuid
-            ).first()
-            
-            if not attachment:
-                raise NotFoundError("Attachment not found or does not belong to this ticket")
-            
-            file_name = None
-            
-            # Delete from Cloudinary if it's a Cloudinary URL
-            if attachment.file_path and attachment.file_path.startswith('http'):
-                try:
-                    from urllib.parse import urlparse
-                    path_parts = urlparse(attachment.file_path).path.split('/')
-                    if 'upload' in path_parts:
-                        upload_idx = path_parts.index('upload')
-                        public_id_parts = path_parts[upload_idx + 2:]
-                        public_id = '/'.join(public_id_parts).rsplit('.', 1)[0]
-                        
-                        import cloudinary
-                        cloudinary.uploader.destroy(public_id, resource_type="auto")
-                        logger.info(f"✓ Cloudinary asset deleted: {public_id}")
-                except Exception as e:
-                    logger.warning(f"Failed to delete from Cloudinary: {e}")
-            
-            # Delete from local storage if it's a local file
-            elif attachment.file_path:
-                import os
-                try:
-                    if os.path.exists(attachment.file_path):
-                        os.remove(attachment.file_path)
-                        logger.info(f"✓ Local file deleted: {attachment.file_path}")
-                except Exception as e:
-                    logger.warning(f"Failed to delete local file: {e}")
-            
-            # Remove from attachment_ids list if present
-            if ticket.attachment_ids and str(attachment.id) in ticket.attachment_ids:
-                ticket.attachment_ids.remove(str(attachment.id))
-            
-            ticket.updated_at = datetime.utcnow()
-            
-            # Log attachment deletion event
-            actor_uuid = UUID(actor_user_id) if actor_user_id else ticket.raised_by_user_id
-            deletion_event = TicketEvent(
-                ticket_id=ticket_uuid,
-                event_type="attachment_deleted",
-                actor_user_id=actor_uuid,
-                payload={
-                    "attachment_id": str(attachment.id),
-                    "file_name": attachment.file_path.split('/')[-1] if attachment.file_path else "unknown"
-                }
-            )
-            db.add(deletion_event)
-            
-            # Delete attachment from database
-            db.delete(attachment)
-            db.commit()
-            
-            logger.info(f"✓ Attachment deleted: {attachment.id}")
-            
-            return {
-                "id": str(attachment.id),
-                "ticket_id": ticket_id,
-                "message": "Attachment deleted successfully"
-            }
-            
-        except NotFoundError:
-            db.rollback()
-            raise
-        except Exception as e:
-            db.rollback()
-            logger.error(f"Failed to delete attachment: {e}")
-            raise ValidationError(f"Failed to delete attachment: {str(e)}")
-        finally:
-            db.close()
     
     @staticmethod
     def add_resolution_note(
@@ -641,73 +686,78 @@ class TicketCreationService:
         follow_up_notes: Optional[str] = None,
         admin_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Add Resolution Note to ticket when closing."""
+        """Add resolution note to ticket"""
         db = SessionLocal()
         try:
-            ticket = db.query(Ticket).filter(Ticket.id == UUID(ticket_id)).first()
+            ticket_uuid = UUID(ticket_id)
+            
+            # Verify ticket exists
+            ticket = db.query(Ticket).filter(Ticket.id == ticket_uuid).first()
             if not ticket:
                 raise NotFoundError("Ticket not found")
             
-            # Check if resolution note already exists
-            existing_note = db.query(ResolutionNote).filter(
-                ResolutionNote.ticket_id == UUID(ticket_id)
-            ).first()
-            if existing_note:
-                raise ConflictError(f"Resolution note already exists for ticket {ticket.ticket_no}")
-            
+            # Validate input
             if not solution_description or len(solution_description.strip()) < 10:
                 raise ValidationError("Solution description must be at least 10 characters")
             
-            # Verify user exists
-            user = db.query(User).filter(User.id == UUID(created_by_user_id)).first()
-            if not user:
-                raise NotFoundError("User not found")
+            logger.info(f"Adding resolution note for ticket {ticket.ticket_no}")
             
-            # Create resolution note
-            note = ResolutionNote(
-                ticket_id=UUID(ticket_id),
-                solution_description=solution_description.strip(),
-                created_by_user_id=UUID(created_by_user_id),
-                steps_taken=steps_taken or [],
-                resources_used=resources_used or [],
-                follow_up_notes=follow_up_notes.strip() if follow_up_notes else None
-            )
+            # Verify creator user exists, fallback to ticket raiser if not
+            actual_creator_id = None
+            try:
+                user_uuid = UUID(created_by_user_id)
+                user = db.query(User).filter(User.id == user_uuid).first()
+                if user:
+                    actual_creator_id = user_uuid
+                else:
+                    actual_creator_id = ticket.raised_by_user_id
+            except (ValueError, Exception):
+                actual_creator_id = ticket.raised_by_user_id
             
-            db.add(note)
-            db.flush()
+            # Check if resolution note already exists
+            existing_note = db.query(ResolutionNote).filter(
+                ResolutionNote.ticket_id == ticket_uuid
+            ).first()
             
-            # Log resolution event
-            event = TicketEvent(
-                ticket_id=UUID(ticket_id),
-                event_type="resolution_note_added",
-                actor_user_id=UUID(created_by_user_id),
-                payload={
-                    "note_id": str(note.id),
-                    "steps_count": len(steps_taken or []),
-                    "resources_count": len(resources_used or [])
-                }
-            )
-            db.add(event)
+            is_update = False
+            if existing_note:
+                existing_note.solution_description = solution_description.strip()
+                existing_note.steps_taken = steps_taken or []
+                existing_note.resources_used = resources_used or []
+                existing_note.follow_up_notes = follow_up_notes
+                note = existing_note
+                is_update = True
+                db.flush()
+            else:
+                note = ResolutionNote(
+                    ticket_id=ticket_uuid,
+                    solution_description=solution_description.strip(),
+                    created_by_user_id=actual_creator_id,
+                    steps_taken=steps_taken or [],
+                    resources_used=resources_used or [],
+                    follow_up_notes=follow_up_notes
+                )
+                db.add(note)
+                db.flush()
+            
             db.commit()
+            logger.info(f"✓ Resolution note {'updated' if is_update else 'added'}")
             
             # Audit log
             if admin_id:
                 try:
                     AdminAuditLog.create(
                         admin_user_id=UUID(admin_id),
-                        action="resolution_note_added",
+                        action="resolution_added" if not is_update else "resolution_updated",
                         resource="resolution_note",
                         resource_id=str(note.id),
                         changes={
                             "ticket_id": ticket_id,
-                            "solution": solution_description[:100],
-                            "steps": len(steps_taken or [])
+                            "solution": solution_description[:100]
                         }
                     )
                 except Exception as e:
                     logger.warning(f"Failed to create audit log: {e}")
-            
-            logger.info(f"✓ Resolution note added to ticket {ticket.ticket_no}")
             
             return {
                 "id": str(note.id),
@@ -716,10 +766,11 @@ class TicketCreationService:
                 "steps_taken": note.steps_taken,
                 "resources_used": note.resources_used,
                 "follow_up_notes": note.follow_up_notes,
-                "created_at": note.created_at.isoformat()
+                "created_at": note.created_at.isoformat(),
+                "is_update": is_update
             }
             
-        except (ValidationError, NotFoundError, ConflictError):
+        except (ValidationError, NotFoundError):
             db.rollback()
             raise
         except Exception as e:
@@ -728,27 +779,90 @@ class TicketCreationService:
             raise ValidationError(f"Failed to add resolution note: {str(e)}")
         finally:
             db.close()
+
     
     @staticmethod
-    def delete_ticket(ticket_id: str, admin_id: str) -> Dict[str, Any]:
-        """Delete a ticket"""
+    def delete_ticket(
+        ticket_id: str,
+        admin_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Delete a ticket and all related data - delegates to services"""
         db = SessionLocal()
         try:
-            ticket = db.query(Ticket).filter(Ticket.id == UUID(ticket_id)).first()
+            ticket_uuid = UUID(ticket_id)
+            
+            # Verify ticket exists
+            ticket = db.query(Ticket).filter(Ticket.id == ticket_uuid).first()
             if not ticket:
-                raise NotFoundError("Ticket not found")
+                raise NotFoundError(f"Ticket {ticket_id} not found")
             
-            ticket_no = ticket.ticket_no
+            logger.info(f"Deleting ticket {ticket.ticket_no}...")
             
-            # Delete associated events, attachments, RCA, resolution notes
-            db.query(TicketEvent).filter(TicketEvent.ticket_id == UUID(ticket_id)).delete()
-            db.query(Attachment).filter(Attachment.ticket_id == UUID(ticket_id)).delete()
-            db.query(RootCauseAnalysis).filter(RootCauseAnalysis.ticket_id == UUID(ticket_id)).delete()
-            db.query(ResolutionNote).filter(ResolutionNote.ticket_id == UUID(ticket_id)).delete()
+            # Deprecate all embeddings using EmbeddingManager
+            try:
+                EmbeddingManager.deprecate_ticket_embeddings(
+                    ticket_id=ticket_id,
+                    reason="ticket_deleted"
+                )
+                logger.info(f"✓ Deprecated ticket embeddings")
+            except Exception as e:
+                logger.warning(f"Failed to deprecate ticket embeddings: {e}")
             
-            # Delete ticket
+            # Deprecate all attachment embeddings
+            attachments = db.query(Attachment).filter(
+                Attachment.ticket_id == ticket_uuid
+            ).all()
+            
+            for attachment in attachments:
+                try:
+                    AttachmentProcessor.deprecate_attachment(
+                        attachment_id=str(attachment.id),
+                        reason="ticket_deleted"
+                    )
+                    logger.debug(f"✓ Deprecated embeddings for attachment {attachment.id}")
+                except Exception as e:
+                    logger.warning(f"Failed to deprecate attachment embeddings: {e}")
+            
+            # Log deletion event
+            deletion_event = TicketEvent(
+                ticket_id=ticket_uuid,
+                event_type="ticket_deleted",
+                actor_user_id=UUID(admin_id) if admin_id else ticket.raised_by_user_id,
+                payload={
+                    "ticket_no": ticket.ticket_no,
+                    "subject": ticket.subject,
+                    "deleted_at": datetime.utcnow().isoformat()
+                }
+            )
+            db.add(deletion_event)
+            db.flush()
+            
+            # Delete resolution note if exists
+            if ticket.resolution_note:
+                db.delete(ticket.resolution_note)
+                logger.debug(f"✓ Deleted resolution note")
+            
+            # Delete RCA if exists
+            if ticket.root_cause_analysis:
+                db.delete(ticket.root_cause_analysis)
+                logger.debug(f"✓ Deleted RCA")
+            
+            # Delete all attachments
+            for attachment in attachments:
+                db.delete(attachment)
+            if attachments:
+                logger.debug(f"✓ Deleted {len(attachments)} attachments")
+            
+            # Delete all events
+            events = db.query(TicketEvent).filter(TicketEvent.ticket_id == ticket_uuid).all()
+            for event in events:
+                db.delete(event)
+            
+            # Delete the ticket
             db.delete(ticket)
             db.commit()
+            
+            logger.info(f"✓ Ticket deleted: {ticket.ticket_no}")
             
             # Audit log
             if admin_id:
@@ -758,20 +872,22 @@ class TicketCreationService:
                         action="ticket_deleted",
                         resource="ticket",
                         resource_id=ticket_id,
-                        changes={"ticket_no": ticket_no}
+                        changes={
+                            "ticket_no": ticket.ticket_no,
+                            "subject": ticket.subject
+                        }
                     )
                 except Exception as e:
                     logger.warning(f"Failed to create audit log: {e}")
             
-            logger.info(f"✓ Ticket deleted: {ticket_no}")
-            
             return {
                 "id": ticket_id,
-                "ticket_no": ticket_no,
-                "message": "Ticket deleted successfully"
+                "ticket_no": ticket.ticket_no,
+                "deleted": True,
+                "deleted_at": datetime.utcnow().isoformat()
             }
             
-        except (NotFoundError, ValidationError):
+        except NotFoundError:
             db.rollback()
             raise
         except Exception as e:

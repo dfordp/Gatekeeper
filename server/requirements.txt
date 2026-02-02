@@ -17,3 +17,4 @@ email-validator==2.1.0
 httpx==0.25.2
 cloudinary>=1.35.0
 python-multipart>=0.0.6
+PyPDF2>=3.0.0

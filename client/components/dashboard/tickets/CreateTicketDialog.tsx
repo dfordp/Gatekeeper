@@ -1,260 +1,286 @@
-  // client/components/dashboard/tickets/CreateTicketDialog.tsx
-  "use client"
+// client/components/dashboard/tickets/CreateTicketDialog.tsx
+"use client"
 
-  import { useState, useEffect, useRef } from "react"
-  import { ticketService, CreateTicketRequest, AddAttachmentRequest, AddRCARequest } from "@/services/ticket.service"
-  import { userService, User } from "@/services/user.service"
-  import { companyService, Company } from "@/services/company.service"
-  import {
-    Dialog,
-    DialogContent,
-    DialogDescription,
-    DialogHeader,
-    DialogTitle,
-    DialogTrigger,
-  } from "@/components/ui/dialog"
-  import { Button } from "@/components/ui/button"
-  import { Input } from "@/components/ui/input"
-  import { Label } from "@/components/ui/label"
-  import { Textarea } from "@/components/ui/textarea"
-  import {
-    Select,
-    SelectContent,
-    SelectItem,
-    SelectTrigger,
-    SelectValue,
-  } from "@/components/ui/select"
-  import { Alert, AlertDescription } from "@/components/ui/alert"
-  import { Loader2, Plus, AlertCircle, Calendar, Building2, Trash2, FileUp, Search, X } from "lucide-react"
+import { useState, useEffect, useRef } from "react"
+import { ticketService, CreateTicketRequest, AddRCARequest } from "@/services/ticket.service"
+import { userService, User } from "@/services/user.service"
+import { companyService, Company } from "@/services/company.service"
+import { useTicketCreation } from "@/hooks/useTicketCreation"
+import TicketProgressCard from "./TicketProgressCard"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { Loader2, Plus, AlertCircle, Calendar, Building2, Trash2, FileUp, X } from "lucide-react"
 
-  interface CreateTicketDialogProps {
-    currentUserId: string
-    onTicketCreated: () => void
+interface CreateTicketDialogProps {
+  currentUserId: string
+  onTicketCreated: () => void
+}
+
+interface AttachmentFile {
+  id: string
+  name: string
+  file: File
+}
+
+const PRIORITY_LEVELS = [
+  { value: "level-1", label: "Level 1 - Critical" },
+  { value: "level-2", label: "Level 2 - High" },
+  { value: "level-3", label: "Level 3 - Medium" },
+]
+
+const CATEGORIES = [
+  { value: "login-access", label: "Login / Access" },
+  { value: "license", label: "License" },
+  { value: "installation", label: "Installation" },
+  { value: "upload-save", label: "Upload or Save" },
+  { value: "workflow", label: "Workflow" },
+  { value: "performance", label: "Performance" },
+  { value: "integration", label: "Integration" },
+  { value: "data-configuration", label: "Data / Configuration" },
+  { value: "other", label: "Other" },
+]
+
+const STATUS_OPTIONS = [
+  { value: "open", label: "Open" },
+  { value: "in_progress", label: "In Progress" },
+  { value: "resolved", label: "Resolved" },
+  { value: "closed", label: "Closed" },
+  { value: "reopened", label: "Reopened" },
+]
+
+export default function CreateTicketDialog({
+  currentUserId,
+  onTicketCreated,
+}: CreateTicketDialogProps) {
+  // Dialog state
+  const [open, setOpen] = useState(false)
+  const [dialogStep, setDialogStep] = useState<"form" | "progress">("form")
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // Ticket creation hook
+  const ticketCreation = useTicketCreation()
+
+  // Company state
+  const [companies, setCompanies] = useState<Company[]>([])
+  const [loadingCompanies, setLoadingCompanies] = useState(true)
+  const [selectedCompanyId, setSelectedCompanyId] = useState<string>("")
+
+  // Users from selected company
+  const [companyUsers, setCompanyUsers] = useState<User[]>([])
+  const [loadingCompanyUsers, setLoadingCompanyUsers] = useState(false)
+  const [userSearch, setUserSearch] = useState<string>("")
+
+  // Create new user state
+  const [showCreateUser, setShowCreateUser] = useState(false)
+  const [newUserName, setNewUserName] = useState<string>("")
+  const [newUserEmail, setNewUserEmail] = useState<string>("")
+  const [creatingUser, setCreatingUser] = useState(false)
+
+  // Engineers state
+  const [engineers, setEngineers] = useState<User[]>([])
+  const [loadingEngineers, setLoadingEngineers] = useState(true)
+
+  // Form state
+  const [raisedByUserId, setRaisedByUserId] = useState<string>("")
+  const [raisedByUserName, setRaisedByUserName] = useState<string>("")
+  const [subject, setSubject] = useState("")
+  const [summary, setSummary] = useState("")
+  const [description, setDescription] = useState("")
+  const [category, setCategory] = useState("")
+  const [level, setLevel] = useState("")
+  const [assignedEngineer, setAssignedEngineer] = useState<string>("")
+  const [isOlderTicket, setIsOlderTicket] = useState(false)
+  const [createdAt, setCreatedAt] = useState<string>("")
+  const [status, setStatus] = useState<string>("")
+  const [ticketNo, setTicketNo] = useState<string>("")
+
+  // RCA state (for older closed tickets)
+  const [rootCauseDescription, setRootCauseDescription] = useState("")
+  const [contributingFactors, setContributingFactors] = useState<string>("")
+  const [preventionMeasures, setPreventionMeasures] = useState("")
+  const [resolutionSteps, setResolutionSteps] = useState<string>("")
+  const [closedAt, setClosedAt] = useState<string>("")
+
+  // Attachments state
+  const [attachments, setAttachments] = useState<AttachmentFile[]>([])
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Load data when dialog opens
+  useEffect(() => {
+    if (open) {
+      fetchCompanies()
+      fetchEngineers()
+    }
+  }, [open])
+
+  // Fetch users when company changes
+  useEffect(() => {
+    if (selectedCompanyId) {
+      fetchCompanyUsers(selectedCompanyId)
+    }
+  }, [selectedCompanyId])
+
+  const fetchCompanies = async () => {
+    try {
+      setLoadingCompanies(true)
+      const result = await companyService.getCompanies(500)
+      setCompanies(result.companies)
+      if (result.companies.length > 0) {
+        setSelectedCompanyId(result.companies[0].id)
+      }
+    } catch (err) {
+      console.error("Failed to load companies:", err)
+      setError("Failed to load companies")
+    } finally {
+      setLoadingCompanies(false)
+    }
   }
 
-  interface AttachmentFile {
-    id: string
-    name: string
-    file: File
+  const fetchCompanyUsers = async (companyId: string) => {
+    try {
+      setLoadingCompanyUsers(true)
+      const result = await userService.getUsers(companyId, undefined, 500)
+      setCompanyUsers(result.users || [])
+      if (result.users && result.users.length > 0 && !raisedByUserId) {
+        setRaisedByUserId(result.users[0].id)
+        setRaisedByUserName(result.users[0].name)
+      }
+    } catch (err) {
+      console.error("Failed to load company users:", err)
+      setError("Failed to load users from company")
+    } finally {
+      setLoadingCompanyUsers(false)
+    }
   }
 
-  const PRIORITY_LEVELS = [
-    { value: "level-1", label: "Level 1" },
-    { value: "level-2", label: "Level 2" },
-    { value: "level-3", label: "Level 3" },
-  ]
+  const fetchEngineers = async () => {
+    try {
+      setLoadingEngineers(true)
+      const result = await userService.getUsers(undefined, undefined, 500)
+      setEngineers(
+        result.users?.filter(
+          (u) => u.role === "support_engineer" || u.role === "supervisor"
+        ) || []
+      )
+    } catch (err) {
+      console.error("Failed to load engineers:", err)
+    } finally {
+      setLoadingEngineers(false)
+    }
+  }
 
-  const CATEGORIES = [
-    { value: "login-access", label: "Login / Access" },
-    { value: "license", label: "License" },
-    { value: "installation", label: "Installation" },
-    { value: "upload-save", label: "Upload or Save" },
-    { value: "workflow", label: "Workflow" },
-    { value: "performance", label: "Performance" },
-    { value: "integration", label: "Integration" },
-    { value: "data-configuration", label: "Data / Configuration" },
-    { value: "other", label: "Other" },
-  ]
-
-  const STATUS_OPTIONS = [
-    { value: "open", label: "Open" },
-    { value: "in_progress", label: "In Progress" },
-    { value: "resolved", label: "Resolved" },
-    { value: "closed", label: "Closed" },
-    { value: "reopened", label: "Reopened" },
-  ]
-
-  export default function CreateTicketDialog({
-    currentUserId,
-    onTicketCreated,
-  }: CreateTicketDialogProps) {
-    const [open, setOpen] = useState(false)
-    const [loading, setLoading] = useState(false)
-    const [error, setError] = useState<string | null>(null)
-    
-    // Company state
-    const [companies, setCompanies] = useState<Company[]>([])
-    const [loadingCompanies, setLoadingCompanies] = useState(true)
-    const [selectedCompanyId, setSelectedCompanyId] = useState<string>("")
-    
-    // Users from selected company state
-    const [companyUsers, setCompanyUsers] = useState<User[]>([])
-    const [loadingCompanyUsers, setLoadingCompanyUsers] = useState(false)
-    const [userSearch, setUserSearch] = useState<string>("")
-    
-    // Create new user state
-    const [showCreateUser, setShowCreateUser] = useState(false)
-    const [newUserName, setNewUserName] = useState<string>("")
-    const [newUserEmail, setNewUserEmail] = useState<string>("")
-    const [creatingUser, setCreatingUser] = useState(false)
-    
-    // Engineers state
-    const [engineers, setEngineers] = useState<User[]>([])
-    const [loadingEngineers, setLoadingEngineers] = useState(true)
-
-    // Form state
-    const [raisedByUserId, setRaisedByUserId] = useState<string>("")
-    const [raisedByUserName, setRaisedByUserName] = useState<string>("")
-    const [subject, setSubject] = useState("")
-    const [summary, setSummary] = useState("")
-    const [description, setDescription] = useState("")
-    const [category, setCategory] = useState("")
-    const [level, setLevel] = useState("")
-    const [assignedEngineer, setAssignedEngineer] = useState<string>("")
-    const [isOlderTicket, setIsOlderTicket] = useState(false)
-    const [createdAt, setCreatedAt] = useState<string>("")
-    const [status, setStatus] = useState<string>("")
-    const [ticketNo, setTicketNo] = useState<string>("")
-    // RCA state (for older closed tickets)
-    const [rootCauseDescription, setRootCauseDescription] = useState("")
-    const [contributingFactors, setContributingFactors] = useState<string>("")
-    const [preventionMeasures, setPreventionMeasures] = useState("")
-    const [resolutionSteps, setResolutionSteps] = useState<string>("")
-    const [closedAt, setClosedAt] = useState<string>("")
-
-    // Attachments state
-    const [attachments, setAttachments] = useState<AttachmentFile[]>([])
-    const fileInputRef = useRef<HTMLInputElement>(null)
-
-    useEffect(() => {
-      if (open) {
-        fetchCompanies()
-        fetchEngineers()
-      }
-    }, [open])
-
-    // Fetch users from selected company
-    useEffect(() => {
-      if (selectedCompanyId) {
-        fetchCompanyUsers(selectedCompanyId)
-      }
-    }, [selectedCompanyId])
-
-    const fetchCompanies = async () => {
-      try {
-        setLoadingCompanies(true)
-        const result = await companyService.getCompanies(500)
-        setCompanies(result.companies)
-        if (result.companies.length > 0) {
-          setSelectedCompanyId(result.companies[0].id)
-        }
-      } catch (err) {
-        console.error("Failed to load companies:", err)
-        setError("Failed to load companies")
-      } finally {
-        setLoadingCompanies(false)
-      }
+  const handleCreateUser = async () => {
+    if (!newUserName.trim()) {
+      setError("User name is required")
+      return
     }
 
-    const fetchCompanyUsers = async (companyId: string) => {
-      try {
-        setLoadingCompanyUsers(true)
-        const result = await userService.getUsers(companyId, undefined, 500)
-        setCompanyUsers(result.users || [])
-        // Auto-select first user if available and not already selected
-        if (result.users && result.users.length > 0 && !raisedByUserId) {
-          setRaisedByUserId(result.users[0].id)
-          setRaisedByUserName(result.users[0].name)
-        }
-      } catch (err) {
-        console.error("Failed to load company users:", err)
-        setError("Failed to load users from company")
-      } finally {
-        setLoadingCompanyUsers(false)
-      }
+    if (!newUserEmail.trim()) {
+      setError("User email is required")
+      return
     }
 
-    const fetchEngineers = async () => {
-      try {
-        setLoadingEngineers(true)
-        const result = await userService.getUsers(undefined, undefined, 500)
-        setEngineers(
-          result.users?.filter(
-            (u) => u.role === "support_engineer" || u.role === "supervisor"
-          ) || []
-        )
-      } catch (err) {
-        console.error("Failed to load engineers:", err)
-      } finally {
-        setLoadingEngineers(false)
-      }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+    if (!emailRegex.test(newUserEmail)) {
+      setError("Invalid email format")
+      return
     }
 
-    // Create new user
-    const handleCreateUser = async () => {
-      if (!newUserName.trim()) {
-        setError("User name is required")
-        return
-      }
+    try {
+      setCreatingUser(true)
+      const newUser = await userService.createUser({
+        name: newUserName.trim(),
+        email: newUserEmail.trim(),
+        company_id: selectedCompanyId,
+        role: "external",
+      })
 
-      if (!newUserEmail.trim()) {
-        setError("User email is required")
-        return
-      }
+      setCompanyUsers([...companyUsers, newUser])
+      setRaisedByUserId(newUser.id)
+      setRaisedByUserName(newUser.name)
 
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-      if (!emailRegex.test(newUserEmail)) {
-        setError("Invalid email format")
-        return
-      }
+      setNewUserName("")
+      setNewUserEmail("")
+      setShowCreateUser(false)
+      setError(null)
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : "Failed to create user"
+      const apiError = err as { response?: { data?: { detail?: string } } }
+      setError(apiError?.response?.data?.detail || errorMessage)
+    } finally {
+      setCreatingUser(false)
+    }
+  }
 
-      try {
-        setCreatingUser(true)
-        const newUser = await userService.createUser({
-          name: newUserName.trim(),
-          email: newUserEmail.trim(),
-          company_id: selectedCompanyId,
-          role: "external", // Default role for new users raised tickets
-        })
+  const filteredUsers = userSearch.trim()
+    ? companyUsers.filter(
+        (u) =>
+          u.name.toLowerCase().includes(userSearch.toLowerCase()) ||
+          u.email.toLowerCase().includes(userSearch.toLowerCase())
+      )
+    : companyUsers
 
-        // Update company users list
-        setCompanyUsers([...companyUsers, newUser])
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (!files) return
 
-        // Select the new user
-        setRaisedByUserId(newUser.id)
-        setRaisedByUserName(newUser.name)
-
-        // Reset form
-        setNewUserName("")
-        setNewUserEmail("")
-        setShowCreateUser(false)
-        setError(null)
-      } catch (err: unknown) {
-        const errorMessage = err instanceof Error ? err.message : "Failed to create user"
-        const apiError = err as { response?: { data?: { detail?: string } } }
-        setError(apiError?.response?.data?.detail || errorMessage)
-      } finally {
-        setCreatingUser(false)
-      }
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i]
+      const id = Math.random().toString(36).substring(2, 11)
+      setAttachments((prev) => [...prev, { id, name: file.name, file }])
     }
 
-    // Filter users based on search
-    const filteredUsers = userSearch.trim()
-      ? companyUsers.filter(
-          (u) =>
-            u.name.toLowerCase().includes(userSearch.toLowerCase()) ||
-            u.email.toLowerCase().includes(userSearch.toLowerCase())
-        )
-      : companyUsers
-
-    const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-      const files = e.target.files
-      if (!files) return
-
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i]
-        const id = Math.random().toString(36).substring(2, 11)
-        setAttachments((prev) => [...prev, { id, name: file.name, file }])
-      }
-
-      if (fileInputRef.current) {
-        fileInputRef.current.value = ""
-      }
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ""
     }
+  }
 
-    const removeAttachment = (id: string) => {
-      setAttachments((prev) => prev.filter((att) => att.id !== id))
-    }
+  const removeAttachment = (id: string) => {
+    setAttachments((prev) => prev.filter((att) => att.id !== id))
+  }
+
+  const resetForm = () => {
+    setRaisedByUserId("")
+    setRaisedByUserName("")
+    setSubject("")
+    setSummary("")
+    setDescription("")
+    setCategory("")
+    setLevel("")
+    setAssignedEngineer("")
+    setCreatedAt("")
+    setIsOlderTicket(false)
+    setStatus("")
+    setClosedAt("")
+    setTicketNo("")
+    setRootCauseDescription("")
+    setContributingFactors("")
+    setPreventionMeasures("")
+    setResolutionSteps("")
+    setAttachments([])
+    setUserSearch("")
+    setError(null)
+    setLoading(false)
+  }
 
     const handleSubmit = async (e: React.FormEvent) => {
       e.preventDefault()
@@ -291,7 +317,7 @@
       try {
         setLoading(true)
     
-        // Create ticket
+        // Create ticket request
         const createRequest: CreateTicketRequest = {
           subject: subject.trim(),
           detailed_description: description.trim(),
@@ -304,131 +330,171 @@
           created_at: isOlderTicket && createdAt ? new Date(createdAt).toISOString() : undefined,
           ticket_no: ticketNo || undefined,
           status: isOlderTicket && status ? status : undefined,
-          closed_at: isOlderTicket && status === "closed" && closedAt ? new Date(closedAt).toISOString() : undefined,
+          closed_at:
+            isOlderTicket && status === "closed" && closedAt
+              ? new Date(closedAt).toISOString()
+              : undefined,
         }
     
+        // Create the ticket
         const createdTicket = await ticketService.createTicket(createRequest)
     
-               // Add attachments if any - use FormData for file upload
-        if (attachments.length > 0) {
-          for (const attachment of attachments) {
-            try {
-              const formData = new FormData()
-              formData.append('file', attachment.file)
-              
-              // Get auth token from localStorage
-              const token = localStorage.getItem('auth_token')
-              
-              const response = await fetch(
-                `/api/tickets/${createdTicket.id}/upload-attachment`,
-                {
-                  method: 'POST',
-                  body: formData,
-                  headers: {
-                    ...(token && { 'Authorization': `Bearer ${token}` }),
-                  },
-                }
-              )
-              
-              if (!response.ok) {
-                const error = await response.json()
-                throw new Error(error.detail || 'Failed to upload attachment')
-              }
-              
-              const result = await response.json()
-              console.log(`✓ Attachment uploaded: ${attachment.name}`)
-            } catch (err) {
-              console.error(`Failed to upload attachment ${attachment.name}:`, err)
-              setError(`Failed to upload ${attachment.name}: ${err instanceof Error ? err.message : 'Unknown error'}`)
-            }
-          }
-        }
+        // ✅ STEP 1: Switch to progress view immediately
+        setDialogStep("progress")
+        setLoading(false)
     
-                // Add RCA if older closed ticket
-        if (isOlderTicket && status === "closed" && rootCauseDescription.trim()) {
-          try {
-            // Validate root cause description length
-            if (rootCauseDescription.trim().length < 10) {
-              setError("Root cause description must be at least 10 characters")
-              return
-            }
-            
-            const rcaRequest: AddRCARequest = {
-              root_cause_description: rootCauseDescription.trim(),
-              created_by_user_id: raisedByUserId,
-              contributing_factors: contributingFactors.trim()
-                ? contributingFactors
-                    .split("\n")
-                    .map((f) => f.trim())
-                    .filter((f) => f.length > 0)
-                : undefined,
-              prevention_measures: preventionMeasures.trim() || undefined,
-              resolution_steps: resolutionSteps.trim()
-                ? resolutionSteps
-                    .split("\n")
-                    .map((s) => s.trim())
-                    .filter((s) => s.length > 0)
-                : undefined,
-              ticket_closed_at: closedAt ? new Date(closedAt).toISOString() : null,
-            }
-            await ticketService.addRCA(createdTicket.id, rcaRequest)
-          } catch (err) {
-            console.error("Failed to add RCA:", err)
-            setError(err instanceof Error ? err.message : "Failed to add RCA")
-          }
-        }
+        // ✅ STEP 2: Queue all tasks BEFORE starting polling
+        console.log(`✓ Ticket created: ${createdTicket.id}, now queueing all tasks...`)
+        
+        const attachmentPromise = attachments.length > 0 
+          ? processAttachments(createdTicket.id)
+          : Promise.resolve()
+        
+        const rcaPromise = isOlderTicket && status === "closed" && rootCauseDescription.trim()
+          ? addRCAAsync(createdTicket.id)
+          : Promise.resolve()
     
-        // Reset form
-        setRaisedByUserId("")
-        setRaisedByUserName("")
-        setSubject("")
-        setSummary("")
-        setDescription("")
-        setCategory("")
-        setLevel("")
-        setAssignedEngineer("")
-        setCreatedAt("")
-        setIsOlderTicket(false)
-        setStatus("")
-        setClosedAt("")
-        setTicketNo("")
-        setRootCauseDescription("")
-        setContributingFactors("")
-        setPreventionMeasures("")
-        setResolutionSteps("")
-        setAttachments([])
-        setUserSearch("")
-        setError(null)
+        // Wait for all tasks to be queued
+        await Promise.all([attachmentPromise, rcaPromise])
+        console.log(`✓ All tasks queued for ticket: ${createdTicket.id}`)
     
-        setOpen(false)
-        onTicketCreated()
+        // ✅ STEP 3: NOW start polling after all tasks are queued
+        ticketCreation.startPolling(createdTicket.id)
+        console.log(`✓ Polling started for ticket: ${createdTicket.id}`)
+    
       } catch (err: unknown) {
         const errorMessage = err instanceof Error ? err.message : "Failed to create ticket"
         const apiError = err as { response?: { data?: { detail?: string } } }
         setError(apiError?.response?.data?.detail || errorMessage)
-      } finally {
         setLoading(false)
+        setDialogStep("form")
+      }
+    }
+    
+    // Process attachments - MUST return a Promise
+    const processAttachments = async (ticketId: string): Promise<void> => {
+      try {
+        for (const attachment of attachments) {
+          try {
+            const formData = new FormData()
+            formData.append("file", attachment.file)
+    
+            const token = localStorage.getItem("auth_token")
+    
+            const response = await fetch(`/api/tickets/${ticketId}/upload-attachment`, {
+              method: "POST",
+              body: formData,
+              headers: {
+                ...(token && { Authorization: `Bearer ${token}` }),
+              },
+            })
+    
+            if (!response.ok) {
+              const error = await response.json()
+              console.warn(`Failed to upload attachment ${attachment.name}: ${error.detail}`)
+            } else {
+              console.log(`✓ Attachment uploaded: ${attachment.name}`)
+            }
+          } catch (err) {
+            console.error(`Failed to upload attachment ${attachment.name}:`, err)
+          }
+        }
+      } catch (err) {
+        console.error("Error processing attachments:", err)
+        throw err
+      }
+    }
+    
+    // Add RCA in background - MUST return a Promise
+    const addRCAAsync = async (ticketId: string): Promise<void> => {
+      try {
+        if (rootCauseDescription.trim().length < 10) {
+          console.warn("Root cause description too short")
+          return
+        }
+    
+        const rcaRequest: AddRCARequest = {
+          root_cause_description: rootCauseDescription.trim(),
+          created_by_user_id: raisedByUserId,
+          contributing_factors: contributingFactors.trim()
+            ? contributingFactors
+                .split("\n")
+                .map((f) => f.trim())
+                .filter((f) => f.length > 0)
+            : undefined,
+          prevention_measures: preventionMeasures.trim() || undefined,
+          resolution_steps: resolutionSteps.trim()
+            ? resolutionSteps
+                .split("\n")
+                .map((s) => s.trim())
+                .filter((s) => s.length > 0)
+            : undefined,
+          ticket_closed_at: closedAt ? new Date(closedAt).toISOString() : null,
+        }
+        await ticketService.addRCA(ticketId, rcaRequest)
+        console.log("✓ RCA added successfully")
+      } catch (err) {
+        console.error("Failed to add RCA:", err)
+        throw err
       }
     }
 
-    const shouldShowRCA = isOlderTicket && status === "closed"
+  const shouldShowRCA = isOlderTicket && status === "closed"
 
-    return (
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogTrigger asChild>
-          <Button>
-            <Plus className="h-4 w-4 mr-2" />
-            Create Ticket
-          </Button>
-        </DialogTrigger>
-        <DialogContent className="max-w-4xl max-h-[95vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Create New Support Ticket</DialogTitle>
-            <DialogDescription>
-              Add a new support ticket to the system. Select a company and the person raising the ticket.
-            </DialogDescription>
-          </DialogHeader>
+  const handleCloseDialog = () => {
+    if (ticketCreation.status?.all_completed) {
+      // Only allow closing after completion
+      resetForm()
+      ticketCreation.reset()
+      setDialogStep("form")
+      setOpen(false)
+      onTicketCreated()
+    } else if (dialogStep === "form") {
+      // Allow closing during form
+      setOpen(false)
+    }
+  }
 
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button>
+          <Plus className="h-4 w-4 mr-2" />
+          Create Ticket
+        </Button>
+      </DialogTrigger>
+
+      <DialogContent className="max-w-4xl max-h-[95vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>
+            {dialogStep === "form" ? "Create New Support Ticket" : "Ticket Creation Progress"}
+          </DialogTitle>
+          <DialogDescription>
+            {dialogStep === "form"
+              ? "Add a new support ticket to the system."
+              : "Your ticket is being created and processed asynchronously."}
+          </DialogDescription>
+        </DialogHeader>
+
+        {/* Progress View */}
+        {dialogStep === "progress" && (
+          <div className="space-y-6 py-4">
+            <TicketProgressCard
+              status={ticketCreation.status}
+              isPolling={ticketCreation.isPolling}
+              onClose={() => {
+                resetForm()
+                ticketCreation.reset()
+                setDialogStep("form")
+                setOpen(false)
+                onTicketCreated()
+              }}
+            />
+          </div>
+        )}
+
+        {/* Form View */}
+        {dialogStep === "form" && (
           <form onSubmit={handleSubmit} className="space-y-6">
             {error && (
               <Alert variant="destructive">
@@ -463,7 +529,7 @@
               </Select>
             </div>
 
-            {/* Raised By User Selection with Search and Create New */}
+            {/* Raised By User Selection */}
             <div className="space-y-2">
               <Label htmlFor="raised-by" className="font-semibold">
                 Who is raising this ticket? *
@@ -540,17 +606,20 @@
                 </div>
               ) : (
                 <div className="space-y-2">
-                  <Select value={raisedByUserId} onValueChange={(value) => {
-                    if (value === "create-new") {
-                      setShowCreateUser(true)
-                    } else {
-                      setRaisedByUserId(value)
-                      const selectedUser = companyUsers.find(u => u.id === value)
-                      if (selectedUser) {
-                        setRaisedByUserName(selectedUser.name)
+                  <Select
+                    value={raisedByUserId}
+                    onValueChange={(value) => {
+                      if (value === "create-new") {
+                        setShowCreateUser(true)
+                      } else {
+                        setRaisedByUserId(value)
+                        const selectedUser = companyUsers.find((u) => u.id === value)
+                        if (selectedUser) {
+                          setRaisedByUserName(selectedUser.name)
+                        }
                       }
-                    }
-                  }}>
+                    }}
+                  >
                     <SelectTrigger>
                       <SelectValue placeholder="Select person from company..." />
                     </SelectTrigger>
@@ -561,13 +630,12 @@
                         </SelectItem>
                       ) : (
                         <>
-                          {filteredUsers.length > 0 && (
+                          {filteredUsers.length > 0 &&
                             filteredUsers.map((user) => (
                               <SelectItem key={user.id} value={user.id}>
                                 {user.name} ({user.email})
                               </SelectItem>
-                            ))
-                          )}
+                            ))}
                           {filteredUsers.length === 0 && !userSearch && (
                             <SelectItem disabled value="none">
                               No users in this company
@@ -749,12 +817,13 @@
                   disabled={loading}
                   className="rounded"
                 />
-                <span className="font-semibold">This is an older ticket (import from legacy system)</span>
+                <span className="font-semibold">
+                  This is an older ticket (import from legacy system)
+                </span>
               </Label>
 
               {isOlderTicket && (
                 <div className="space-y-4 mt-4">
-                  {/* Custom Date */}
                   <div className="space-y-2">
                     <Label htmlFor="created-at" className="flex items-center gap-2">
                       <Calendar className="h-4 w-4" />
@@ -769,7 +838,6 @@
                     />
                   </div>
 
-                  {/* Custom Ticket Number */}
                   <div className="space-y-2">
                     <Label htmlFor="ticket-no">Ticket Number (optional)</Label>
                     <Input
@@ -781,7 +849,6 @@
                     />
                   </div>
 
-                  {/* Status */}
                   <div className="space-y-2">
                     <Label htmlFor="status">Ticket Status</Label>
                     <Select value={status} onValueChange={setStatus}>
@@ -808,7 +875,6 @@
                   Root Cause Analysis (Required for Closed Tickets)
                 </div>
 
-                {/* Ticket Closed Date */}
                 <div className="space-y-2">
                   <Label htmlFor="closed-at" className="flex items-center gap-2">
                     <Calendar className="h-4 w-4" />
@@ -875,12 +941,7 @@
 
             {/* Submit Button */}
             <div className="flex gap-2 justify-end">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setOpen(false)}
-                disabled={loading}
-              >
+              <Button type="button" variant="outline" onClick={handleCloseDialog} disabled={loading}>
                 Cancel
               </Button>
               <Button type="submit" disabled={loading}>
@@ -889,7 +950,8 @@
               </Button>
             </div>
           </form>
-        </DialogContent>
-      </Dialog>
-    )
-  }
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}

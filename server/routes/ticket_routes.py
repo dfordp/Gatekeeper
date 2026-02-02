@@ -1,13 +1,24 @@
 # server/routes/ticket_routes.py
-"""Ticket creation, management, and RCA routes"""
+"""
+Ticket creation, management, and RCA routes with Phase 1 integration
+
+Integrates:
+- EmbeddingAPIClient for OpenAI embeddings
+- AttachmentSummarizer for attachment analysis
+- TicketRequestQueue for async task management
+- Event emission for Qdrant sync
+"""
 from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File
 from typing import Optional, List
 from pydantic import BaseModel, Field
 from datetime import datetime
+import sys
+import os
 
 from middleware.auth_middleware import get_current_admin
 from services.ticket_creation_service import TicketCreationService
 from services.file_upload_service import FileUploadService
+from services.ticket_request_queue import TicketRequestQueue, TaskType
 from utils.exceptions import ValidationError, NotFoundError, ConflictError
 from core.logger import get_logger
 
@@ -72,6 +83,7 @@ class UpdateTicketRequest(BaseModel):
     category: Optional[str] = Field(None, description="Ticket category")
     level: Optional[str] = Field(None, description="Priority level (level-1, level-2, level-3)")
 
+
 # ==================== ENDPOINTS ====================
 
 @router.post("/create")
@@ -81,6 +93,10 @@ async def create_ticket(
 ):
     """
     Create a new ticket with optional older ticket support.
+    
+    Integrates Phase 1:
+    - Queues embedding creation task
+    - Returns async task tracking URLs
     
     Supports:
     - New tickets (automatic timestamp)
@@ -93,6 +109,7 @@ async def create_ticket(
         if request.created_at:
             created_at = datetime.fromisoformat(request.created_at.replace("Z", "+00:00"))
         
+        # Create ticket (synchronous)
         result = TicketCreationService.create_ticket(
             subject=request.subject,
             detailed_description=request.detailed_description,
@@ -107,7 +124,22 @@ async def create_ticket(
             ticket_no=request.ticket_no,
             status=request.status
         )
+        
+        # Get ticket async task status (Phase 1)
+        try:
+            ticket_status = TicketRequestQueue.get_ticket_status(result["id"])
+            result["creation_status"] = "success"
+            result["async_tasks"] = {
+                "task_summary": ticket_status.get("task_breakdown", {}),
+                "polling_url": f"/api/tickets/creation-status/{result['id']}",
+                "in_progress": ticket_status.get("in_progress_tasks", 0) > 0
+            }
+        except Exception as e:
+            logger.warning(f"Failed to get ticket status: {e}")
+            result["async_tasks"] = {"error": "Failed to track async tasks"}
+        
         return result
+        
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except NotFoundError as e:
@@ -119,13 +151,134 @@ async def create_ticket(
         raise HTTPException(status_code=500, detail="Failed to create ticket")
 
 
+@router.get("/creation-status/{ticket_id}")
+async def get_ticket_creation_status(ticket_id: str):
+    """
+    Get the creation status of a ticket, including all async tasks (Phase 1)
+    
+    Returns comprehensive status of all async operations for the ticket.
+    
+    Response:
+    {
+        "ticket_id": "uuid",
+        "overall_status": "pending|processing|completed|error",
+        "task_breakdown": {
+            "pending": 0,
+            "processing": 1,
+            "completed": 2,
+            "failed": 0,
+            "skipped": 0,
+            "retrying": 0
+        },
+        "tasks": {
+            "task_id_1": {
+                "task_id": "...",
+                "task_type": "attachment_processing|embedding_creation|rca_creation",
+                "status": "completed|pending|processing|failed",
+                "retry_count": 0,
+                "error_message": null,
+                "created_at": "...",
+                "completed_at": "..."
+            },
+            ...
+        },
+        "total_tasks": 3,
+        "completed_tasks": 2,
+        "failed_tasks": 0,
+        "in_progress_tasks": 1
+    }
+    """
+    try:
+        status = TicketRequestQueue.get_ticket_status(ticket_id)
+        return status
+    except Exception as e:
+        logger.error(f"Error getting ticket creation status: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get ticket status")
+
+
+@router.get("/queue-status/{task_id}")
+async def get_queue_task_status(task_id: str):
+    """
+    Get status of a specific queued task (Phase 1)
+    
+    Returns detailed status of an individual async task.
+    
+    Response:
+    {
+        "task_id": "uuid",
+        "ticket_id": "uuid",
+        "task_type": "attachment_processing|embedding_creation|rca_creation|qdrant_sync",
+        "status": "pending|processing|completed|failed|skipped|retrying",
+        "retry_count": 0,
+        "max_retries": 3,
+        "error_message": null,
+        "created_at": "2026-02-02T...",
+        "started_at": null,
+        "completed_at": null
+    }
+    """
+    try:
+        task_status = TicketRequestQueue.get_task_status(task_id)
+        if not task_status:
+            raise HTTPException(status_code=404, detail="Task not found")
+        return task_status
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting task status: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get task status")
+
+
+@router.get("/queue/stats")
+async def get_queue_statistics():
+    """
+    Get overall queue statistics (Phase 1)
+    
+    Returns system-wide async queue statistics.
+    
+    Response:
+    {
+        "total_tasks": 42,
+        "status_breakdown": {
+            "pending": 5,
+            "processing": 3,
+            "completed": 30,
+            "failed": 2,
+            "skipped": 2,
+            "retrying": 0
+        },
+        "type_breakdown": {
+            "attachment_processing": 10,
+            "embedding_creation": 15,
+            "rca_creation": 8,
+            "qdrant_sync": 9
+        },
+        "queue_capacity_used": "4.2%"
+    }
+    """
+    try:
+        stats = TicketRequestQueue.get_stats()
+        return stats
+    except Exception as e:
+        logger.error(f"Error getting queue stats: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get queue statistics")
+
+
 @router.post("/{ticket_id}/upload-attachment")
 async def upload_attachment(
     ticket_id: str,
     file: UploadFile = File(...)
 ):
     """
-    Upload attachment file to ticket.
+    Upload attachment file to ticket with Phase 1 integration.
+    
+    Workflow:
+    1. Save file locally
+    2. Upload to Cloudinary
+    3. Delete from local storage
+    4. Queue attachment processing task (summarization + embedding)
+    5. Store attachment metadata
+    
     File is saved locally, uploaded to Cloudinary, then deleted from local storage.
     """
     try:
@@ -163,7 +316,7 @@ async def upload_attachment(
         
         logger.info(f"Attachment upload - cloudinary: {cloudinary_url}, local: {local_path}, using: {storage_path}")
         
-        # Create attachment record
+        # Create attachment record with Phase 1 integration
         attachment_result = TicketCreationService.add_attachment(
             ticket_id=ticket_id,
             file_path=cloudinary_url,  # Store the URL we'll use for retrieval
@@ -190,7 +343,15 @@ async def add_attachment(
     ticket_id: str,
     request: AddAttachmentRequest
 ):
-    """Add attachment to ticket"""
+    """
+    Add attachment to ticket with Phase 1 integration.
+    
+    Queues:
+    - Attachment summarization task (Grok Vision for images, PDF extraction, etc.)
+    - Embedding creation task for attachment content
+    
+    Add attachment to ticket
+    """
     try:
         result = TicketCreationService.add_attachment(
             ticket_id=ticket_id,
@@ -218,7 +379,14 @@ async def add_rca(
     ticket_id: str,
     request: AddRCARequest
 ):
-    """Add Root Cause Analysis to ticket"""
+    """
+    Add Root Cause Analysis to ticket.
+    
+    Service handles:
+    - RCA creation and persistence
+    - Embedding generation
+    - Task queue management
+    """
     try:
         logger.info(f"RCA endpoint called: ticket_id={ticket_id}")
         logger.info(f"RCA request data: {request.dict()}")
@@ -234,20 +402,20 @@ async def add_rca(
             ticket_closed_at=request.ticket_closed_at,
             admin_id=None
         )
+        
+        # Service already queued and completed RCA task - don't queue again!
         logger.info(f"✓ RCA endpoint success: {result}")
         return result
+        
     except ValidationError as e:
         logger.error(f"ValidationError in RCA: {e}")
         raise HTTPException(status_code=400, detail=str(e))
     except NotFoundError as e:
         logger.error(f"NotFoundError in RCA: {e}")
         raise HTTPException(status_code=404, detail=str(e))
-    except ConflictError as e:
-        logger.error(f"ConflictError in RCA: {e}")
-        raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
-        logger.error(f"Unexpected error in RCA endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to add RCA: {str(e)}")
+        logger.error(f"Unexpected error in RCA: {e}")
+        raise HTTPException(status_code=500, detail="Failed to add RCA")
 
 
 @router.post("/{ticket_id}/resolution")
@@ -277,6 +445,7 @@ async def add_resolution_note(
     except Exception as e:
         logger.error(f"Error adding resolution note: {e}")
         raise HTTPException(status_code=500, detail="Failed to add resolution note")
+
 
 @router.delete("/{ticket_id}")
 async def delete_ticket(
@@ -322,6 +491,7 @@ async def update_ticket(
     except Exception as e:
         logger.error(f"Error updating ticket: {e}")
         raise HTTPException(status_code=500, detail="Failed to update ticket")
+
 
 @router.get("/{ticket_id}/attachments/{attachment_id}/download")
 async def download_attachment(
@@ -377,6 +547,7 @@ async def download_attachment(
     except Exception as e:
         logger.error(f"Error downloading attachment: {e}")
         raise HTTPException(status_code=500, detail="Failed to download attachment")
+
 
 @router.delete("/{ticket_id}/attachments/{attachment_id}")
 async def delete_attachment(
