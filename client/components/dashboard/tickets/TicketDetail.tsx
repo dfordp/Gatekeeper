@@ -14,8 +14,10 @@ import {
   TabsList,
   TabsTrigger,
 } from "@/components/ui/tabs"
-import { Loader2, ArrowLeft, AlertCircle, Trash2, Edit2, FileText, Zap, Download } from "lucide-react"
+import { Loader2, ArrowLeft, AlertCircle, Trash2, Edit2, FileText, Zap, Download, Plus } from "lucide-react"
 import { ticketService, TicketDetail as TicketDetailType } from "@/services/ticket.service"
+import { irService, IncidentReport } from "@/services/ir.service"
+import IRDialog from "./IRDialog"
 import TicketTimeline from "./TicketTimeline"
 import TicketActions from "./TicketActions"
 import EditTicketDialog from "./EditTicketDialog"
@@ -46,11 +48,13 @@ const isImageFile = (filename: string): boolean => {
 export default function TicketDetail({ ticketId }: TicketDetailProps) {
   const router = useRouter()
   const [ticket, setTicket] = useState<TicketDetailType | null>(null)
+  const [existingIR, setExistingIR] = useState<IncidentReport | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [actionLoading, setActionLoading] = useState(false)
   const [showEditDialog, setShowEditDialog] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [irDialogOpen, setIRDialogOpen] = useState(false)
 
   useEffect(() => {
     fetchTicket()
@@ -62,10 +66,30 @@ export default function TicketDetail({ ticketId }: TicketDetailProps) {
       setError(null)
       const result = await ticketService.getTicketById(ticketId)
       setTicket(result)
+      
+      // Fetch existing IR if ticket has one
+      if (result.has_ir) {
+        await fetchExistingIR()
+      } else {
+        setExistingIR(null)
+      }
     } catch (err: any) {
       setError(err.response?.data?.detail || "Failed to load ticket")
     } finally {
       setLoading(false)
+    }
+  }
+
+  const fetchExistingIR = async () => {
+    try {
+      const irs = await irService.getTicketIRs(ticketId)
+      if (irs && irs.length > 0) {
+        // Get the most recent IR (first one since they're ordered by raised_at DESC)
+        setExistingIR(irs[0])
+      }
+    } catch (err: any) {
+      console.error("Failed to fetch existing IR:", err)
+      // Don't show error to user, just log it
     }
   }
 
@@ -119,7 +143,7 @@ export default function TicketDetail({ ticketId }: TicketDetailProps) {
     category?: string
     level?: string
     created_at?: string  
-}) => {
+  }) => {
     try {
       setActionLoading(true)
       const updated = await ticketService.updateTicket(ticketId, data)
@@ -130,6 +154,11 @@ export default function TicketDetail({ ticketId }: TicketDetailProps) {
     } finally {
       setActionLoading(false)
     }
+  }
+
+  const handleIRUpdated = () => {
+    // Refresh both ticket and IR data
+    fetchTicket()
   }
 
   if (loading) {
@@ -202,6 +231,43 @@ export default function TicketDetail({ ticketId }: TicketDetailProps) {
           Delete
         </Button>
       </div>
+
+      {/* IR Alert / Button */}
+      {ticket.has_ir && existingIR && (
+        <div className="bg-blue-50 border border-blue-200 rounded p-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="h-5 w-5 text-blue-600" />
+              <div>
+                <p className="font-semibold text-blue-900">Incident Report Active</p>
+                <p className="text-sm text-blue-800">{existingIR.ir_number}</p>
+                <p className="text-xs text-blue-700 mt-1">
+                  Status: <span className="font-semibold">{existingIR.status}</span> | 
+                  Vendor: <span className="font-semibold">{existingIR.vendor}</span>
+                </p>
+              </div>
+            </div>
+            <Button
+              onClick={() => setIRDialogOpen(true)}
+              variant="outline"
+              size="sm"
+            >
+              Manage IR
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {!ticket.has_ir && (
+        <Button
+          onClick={() => setIRDialogOpen(true)}
+          variant="outline"
+          className="w-full"
+        >
+          <Plus className="h-4 w-4 mr-2" />
+          Open Incident Report
+        </Button>
+      )}
 
       {/* Tabs */}
       <Tabs defaultValue="ticket" className="w-full">
@@ -366,7 +432,7 @@ export default function TicketDetail({ ticketId }: TicketDetailProps) {
           </div>
         </TabsContent>
 
-                {/* RCA Tab */}
+        {/* RCA Tab */}
         {ticket.rca && (
           <TabsContent value="rca" className="space-y-6">
             <Card>
@@ -562,8 +628,20 @@ export default function TicketDetail({ ticketId }: TicketDetailProps) {
         onOpenChange={setShowEditDialog}
         ticket={ticket}
         onSave={handleEditTicket}
-        fetchTicket={fetchTicket}  // Add this
+        fetchTicket={fetchTicket}
         isLoading={actionLoading}
+      />
+
+      {/* IR Dialog */}
+      <IRDialog
+        open={irDialogOpen}
+        onOpenChange={setIRDialogOpen}
+        ticketId={ticket.id}
+        ticketNo={ticket.ticket_no}
+        hasOpenIR={ticket.has_ir || false}
+        irNumber={ticket.ir_number}
+        existingIR={existingIR}
+        onIRUpdated={handleIRUpdated}
       />
 
       {/* Delete Confirmation */}

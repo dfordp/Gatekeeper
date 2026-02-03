@@ -93,6 +93,14 @@ class Ticket(Base):
     reopened_at = Column(DateTime, nullable=True)
     attachment_ids = Column(JSONB, nullable=True, default=[])
     
+    # IR (Incident Report) Tracking
+    has_ir = Column(Boolean, nullable=False, default=False, index=True)  # Is IR open?
+    ir_number = Column(String(100), nullable=True, unique=True)  # Siemens IR number
+    ir_raised_at = Column(DateTime, nullable=True)  # When IR was opened
+    ir_expected_resolution_date = Column(DateTime, nullable=True)  # Expected resolution from Siemens
+    ir_notes = Column(Text, nullable=True)  # Notes about the IR (status, updates, etc.)
+    ir_closed_at = Column(DateTime, nullable=True)  # When IR was closed/resolved
+    
     company = relationship("Company", back_populates="tickets")
     raised_by_user = relationship("User", foreign_keys=[raised_by_user_id], back_populates="tickets_raised")
     assigned_engineer = relationship("User", foreign_keys=[assigned_engineer_id], back_populates="tickets_assigned")
@@ -108,10 +116,79 @@ class Ticket(Base):
         Index("idx_ticket_company", "company_id"),
         Index("idx_ticket_status", "status"),
         Index("idx_ticket_created_at", "created_at"),
+        Index("idx_ticket_has_ir", "has_ir"),  # For querying tickets with open IRs
+        Index("idx_ticket_ir_raised_at", "ir_raised_at"),  # For sorting by IR age
     )
     
     def __repr__(self):
         return f"<Ticket {self.ticket_no}>"
+    
+class IncidentReport(Base):
+    """Incident Report (IR) model - tracks external vendor reports (e.g., Siemens)"""
+    __tablename__ = "incident_report"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    ticket_id = Column(UUID(as_uuid=True), ForeignKey("ticket.id"), nullable=False, index=True)
+    ir_number = Column(String(100), nullable=False, unique=True, index=True)
+    vendor = Column(String(100), nullable=False, default="siemens")  # siemens, other vendors
+    status = Column(String(50), nullable=False, default="open")  # open, in_progress, resolved, closed
+    raised_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    expected_resolution_date = Column(DateTime, nullable=True)
+    resolved_at = Column(DateTime, nullable=True)
+    notes = Column(Text, nullable=True)
+    
+    # Track updates from vendor
+    last_vendor_update = Column(DateTime, nullable=True)
+    vendor_status = Column(String(100), nullable=True)  # Status from vendor
+    vendor_notes = Column(Text, nullable=True)  # Notes from vendor
+    
+    created_by_user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=False)
+    updated_by_user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    ticket = relationship("Ticket", foreign_keys=[ticket_id])
+    created_by_user = relationship("User", foreign_keys=[created_by_user_id])
+    updated_by_user = relationship("User", foreign_keys=[updated_by_user_id])
+    events = relationship("IREvent", back_populates="incident_report", cascade="all, delete-orphan")
+    
+    __table_args__ = (
+        Index("idx_ir_ticket", "ticket_id"),
+        Index("idx_ir_number", "ir_number"),
+        Index("idx_ir_status", "status"),
+        Index("idx_ir_raised_at", "raised_at"),
+        Index("idx_ir_vendor", "vendor"),
+    )
+    
+    def __repr__(self):
+        return f"<IncidentReport {self.ir_number}>"
+
+
+class IREvent(Base):
+    """IR Event log - tracks all IR status changes and updates"""
+    __tablename__ = "ir_event"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    incident_report_id = Column(UUID(as_uuid=True), ForeignKey("incident_report.id"), nullable=False, index=True)
+    event_type = Column(String(50), nullable=False)  # ir_opened, status_updated, vendor_update, ir_closed
+    actor_user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=False)
+    old_status = Column(String(50), nullable=True)
+    new_status = Column(String(50), nullable=True)
+    notes = Column(Text, nullable=True)
+    payload = Column(JSONB, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    
+    incident_report = relationship("IncidentReport", back_populates="events")
+    actor_user = relationship("User")
+    
+    __table_args__ = (
+        Index("idx_ir_event_incident_report", "incident_report_id"),
+        Index("idx_ir_event_type", "event_type"),
+        Index("idx_ir_event_created_at", "created_at"),
+    )
+    
+    def __repr__(self):
+        return f"<IREvent {self.id} {self.event_type}>"
 
 
 class TicketEvent(Base):
@@ -291,7 +368,7 @@ class Embedding(Base):
     rca_attachment = relationship("RCAAttachment", back_populates="embeddings")
     
     __table_args__ = (
-        CheckConstraint("source_type IN ('ticket_summary', 'ticket_description', 'resolution', 'rca', 'log_snippet')"),
+        CheckConstraint("source_type IN ('ticket_summary', 'ticket_description', 'resolution', 'rca', 'log_snippet','ir')"),
         Index("idx_embedding_company_active", "company_id", "is_active"),
         Index("idx_embedding_ticket", "ticket_id"),
         Index("idx_embedding_attachment", "attachment_id"),

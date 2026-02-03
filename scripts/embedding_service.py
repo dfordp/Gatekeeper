@@ -11,6 +11,7 @@ When tickets are created/updated/deleted, this service:
 3. Assigns vector IDs from the embedding service
 4. Emits events that trigger async processing (Qdrant sync, similarity checks)
 5. Maps similar tickets based on vector similarity
+6. Embeds Incident Report (IR) information for vendor escalations
 """
 
 import logging
@@ -358,6 +359,165 @@ class EmbeddingManager:
     
     
     @staticmethod
+    def create_ir_embedding(
+        ticket_id: str,
+        company_id: str,
+        ir_number: str,
+        vendor: str = "siemens",
+        ir_notes: Optional[str] = None,
+        vendor_status: Optional[str] = None,
+        vendor_notes: Optional[str] = None
+    ) -> bool:
+        """
+        Create embedding for an Incident Report (IR).
+        Called when an IR is opened or updated.
+        Embeds IR number, vendor, status, and notes separately.
+        
+        Args:
+            ticket_id: UUID of the ticket
+            company_id: UUID of the company
+            ir_number: IR number (e.g., "IR-2025-001")
+            vendor: Vendor name (default: "siemens")
+            ir_notes: Internal IR notes
+            vendor_status: Vendor's current status (e.g., "Investigating")
+            vendor_notes: Vendor's notes about the issue
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        db = SessionLocal()
+        try:
+            ticket_uuid = UUID(ticket_id)
+            company_uuid = UUID(company_id)
+            
+            logger.info(f"Creating IR embedding for ticket {ticket_id}: {ir_number}")
+            
+            # Deprecate old IR embeddings if they exist
+            deprecated_count = db.query(Embedding).filter(
+                Embedding.ticket_id == ticket_uuid,
+                Embedding.source_type.in_([
+                    "incident_report",
+                    "incident_report_vendor",
+                    "incident_report_notes"
+                ]),
+                Embedding.is_active == True
+            ).update({
+                Embedding.is_active: False,
+                Embedding.deprecated_at: datetime.utcnow(),
+                Embedding.deprecation_reason: "ir_updated"
+            }, synchronize_session=False)
+            
+            sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'scripts'))
+            from embedding_service import EmbeddingService
+            
+            embedding_count = 0
+            
+            # 1. Embed IR header (number + vendor)
+            ir_header_text = f"Incident Report {ir_number} - Vendor: {vendor}"
+            
+            try:
+                vector = EmbeddingService.get_embedding_vector(ir_header_text)
+                if vector:
+                    emb = Embedding(
+                        company_id=company_uuid,
+                        ticket_id=ticket_uuid,
+                        source_type="incident_report",
+                        chunk_index=0,
+                        text_content=ir_header_text[:EmbeddingManager.MAX_TEXT_LENGTH],
+                        vector_id=str(UUID(int=hash(ir_header_text) & ((1 << 128) - 1))),
+                        is_active=True
+                    )
+                    db.add(emb)
+                    db.flush()
+                    embedding_count += 1
+                    logger.debug(f"✓ Added IR header embedding for ticket {ticket_id}")
+            except Exception as e:
+                logger.warning(f"Failed to embed IR header: {e}")
+            
+            # 2. Embed vendor status and notes if available
+            if vendor_status or vendor_notes:
+                vendor_content = ""
+                if vendor_status:
+                    vendor_content += f"Vendor Status: {vendor_status}"
+                if vendor_notes:
+                    vendor_content += f" - {vendor_notes}"
+                
+                try:
+                    vector = EmbeddingService.get_embedding_vector(vendor_content)
+                    if vector:
+                        emb = Embedding(
+                            company_id=company_uuid,
+                            ticket_id=ticket_uuid,
+                            source_type="incident_report_vendor",
+                            chunk_index=0,
+                            text_content=vendor_content[:EmbeddingManager.MAX_TEXT_LENGTH],
+                            vector_id=str(UUID(int=hash(vendor_content) & ((1 << 128) - 1))),
+                            is_active=True
+                        )
+                        db.add(emb)
+                        db.flush()
+                        embedding_count += 1
+                        logger.debug(f"✓ Added vendor status embedding for ticket {ticket_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to embed vendor status: {e}")
+            
+            # 3. Embed internal IR notes if available (with chunking for long notes)
+            if ir_notes:
+                chunks = EmbeddingManager._chunk_text(ir_notes)
+                logger.debug(f"Chunked IR notes into {len(chunks)} pieces for ticket {ticket_id}")
+                
+                for idx, chunk in enumerate(chunks):
+                    try:
+                        vector = EmbeddingService.get_embedding_vector(chunk)
+                        if vector:
+                            emb = Embedding(
+                                company_id=company_uuid,
+                                ticket_id=ticket_uuid,
+                                source_type="incident_report_notes",
+                                chunk_index=idx,
+                                text_content=chunk[:EmbeddingManager.MAX_TEXT_LENGTH],
+                                vector_id=str(UUID(int=hash(chunk) & ((1 << 128) - 1))),
+                                is_active=True
+                            )
+                            db.add(emb)
+                            db.flush()
+                            embedding_count += 1
+                            logger.debug(f"✓ Added IR notes embedding chunk {idx} for ticket {ticket_id}")
+                    except Exception as e:
+                        logger.warning(f"Failed to embed IR notes chunk {idx}: {e}")
+            
+            db.commit()
+            logger.info(f"✓ {'Updated' if deprecated_count > 0 else 'Created'} IR embedding ({embedding_count} chunks) for ticket {ticket_id}")
+            
+            # Emit EMBEDDING_CREATED event for async Qdrant sync
+            try:
+                from event_queue import EventQueue, EventType
+                EventQueue.emit(
+                    EventType.EMBEDDING_CREATED,
+                    ticket_id=ticket_id,
+                    company_id=company_id,
+                    embedding_count=embedding_count,
+                    source_types=[
+                        "incident_report",
+                        "incident_report_vendor",
+                        "incident_report_notes"
+                    ]
+                )
+                logger.info(f"✓ Emitted IR EMBEDDING_CREATED event for {ticket_id}")
+            except Exception as e:
+                logger.warning(f"Failed to emit IR EMBEDDING_CREATED event: {e}")
+            
+            return True
+            
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Failed to create IR embedding: {e}")
+            return False
+        finally:
+            db.close()
+    
+    
+    @staticmethod
     def deprecate_ticket_embeddings(
         ticket_id: str,
         reason: str = "ticket_deleted"
@@ -612,5 +772,178 @@ class EmbeddingManager:
         except Exception as e:
             logger.error(f"Failed to get similar tickets: {e}")
             return []
+        finally:
+            db.close()
+
+    @staticmethod
+    def add_ir_embedding(
+        ticket_id: str,
+        ir_id: str,
+        company_id: str,
+        ir_number: str,
+        vendor: str,
+        notes: Optional[str] = None,
+        resolution_notes: Optional[str] = None
+    ) -> bool:
+        """
+        Create embedding for Incident Report.
+        Stores in PostgreSQL and syncs to Qdrant immediately.
+        
+        Args:
+            ticket_id: UUID of the ticket
+            ir_id: UUID of the incident report
+            company_id: UUID of the company
+            ir_number: IR number
+            vendor: Vendor name
+            notes: IR notes
+            resolution_notes: Resolution notes
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        db = SessionLocal()
+        try:
+            ticket_uuid = UUID(ticket_id)
+            company_uuid = UUID(company_id)
+            
+            logger.info(f"Creating IR embedding for ticket {ticket_id}, IR {ir_number}")
+            
+            # Build IR text for embedding
+            ir_text = f"Incident Report {ir_number} (vendor: {vendor})"
+            if notes:
+                ir_text += f" Notes: {notes}"
+            if resolution_notes:
+                ir_text += f" Resolution: {resolution_notes}"
+            
+            vector = EmbeddingManager._api_client.get_embedding_vector(ir_text)
+            if not vector:
+                logger.warning(f"Failed to generate vector for IR {ir_number}")
+                return False
+            
+            emb = Embedding(
+                company_id=company_uuid,
+                ticket_id=ticket_uuid,
+                source_type="ir",
+                text_content=ir_text[:2000],
+                is_active=True
+            )
+            db.add(emb)
+            db.flush()  # Get the ID without committing
+            
+            # Sync to Qdrant and set vector_id in the same session
+            point_id = EmbeddingManager._sync_embedding_to_qdrant(
+                db=db,
+                embedding_obj=emb,
+                ticket_id=ticket_id,
+                company_id=company_id,
+                source_type="ir",
+                text_content=ir_text
+            )
+            
+            # Single commit for IR embedding
+            db.commit()
+            logger.info(f"✓ Created IR embedding for ticket {ticket_id}, IR {ir_number}")
+            return True
+                    
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Failed to add IR embedding: {e}")
+            return False
+        finally:
+            db.close()
+    
+    @staticmethod
+    def update_ir_embedding(
+        ticket_id: str,
+        company_id: str,
+        ir_number: str,
+        vendor: str,
+        status: str,
+        notes: Optional[str] = None,
+        vendor_notes: Optional[str] = None,
+        resolution_notes: Optional[str] = None
+    ) -> bool:
+        """
+        Update embedding when IR status changes.
+        Deprecates old embedding and creates new one.
+        
+        Args:
+            ticket_id: UUID of the ticket
+            company_id: UUID of the company
+            ir_number: IR number
+            vendor: Vendor name
+            status: Current IR status
+            notes: IR notes
+            vendor_notes: Vendor notes
+            resolution_notes: Resolution notes
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        db = SessionLocal()
+        try:
+            ticket_uuid = UUID(ticket_id)
+            company_uuid = UUID(company_id)
+            
+            logger.info(f"Updating IR embedding for ticket {ticket_id}, IR {ir_number}")
+            
+            # Deprecate old IR embedding if it exists
+            deprecated_count = db.query(Embedding).filter(
+                Embedding.ticket_id == ticket_uuid,
+                Embedding.source_type == "ir",
+                Embedding.is_active == True
+            ).update({
+                Embedding.is_active: False,
+                Embedding.deprecated_at: datetime.utcnow(),
+                Embedding.deprecation_reason: "ir_updated"
+            }, synchronize_session=False)
+            
+            if deprecated_count > 0:
+                logger.info(f"Deprecated {deprecated_count} old IR embeddings")
+            
+            # Build updated IR text for embedding
+            ir_text = f"Incident Report {ir_number} (vendor: {vendor}, status: {status})"
+            if notes:
+                ir_text += f" Notes: {notes}"
+            if vendor_notes:
+                ir_text += f" Vendor Notes: {vendor_notes}"
+            if resolution_notes:
+                ir_text += f" Resolution: {resolution_notes}"
+            
+            vector = EmbeddingManager._api_client.get_embedding_vector(ir_text)
+            if not vector:
+                logger.warning(f"Failed to generate vector for IR {ir_number}")
+                db.rollback()
+                return False
+            
+            emb = Embedding(
+                company_id=company_uuid,
+                ticket_id=ticket_uuid,
+                source_type="ir",
+                text_content=ir_text[:2000],
+                is_active=True
+            )
+            db.add(emb)
+            db.flush()  # Get the ID without committing
+            
+            # Sync to Qdrant and set vector_id in the same session
+            point_id = EmbeddingManager._sync_embedding_to_qdrant(
+                db=db,
+                embedding_obj=emb,
+                ticket_id=ticket_id,
+                company_id=company_id,
+                source_type="ir",
+                text_content=ir_text
+            )
+            
+            # Single commit for IR embedding
+            db.commit()
+            logger.info(f"✓ Updated IR embedding for ticket {ticket_id}, IR {ir_number}")
+            return True
+                    
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Failed to update IR embedding: {e}")
+            return False
         finally:
             db.close()

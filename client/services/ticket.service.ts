@@ -94,8 +94,14 @@ export interface TicketDetail extends Ticket {
   attachments?: Attachment[]  // Ticket attachments
   root_cause_analysis?: RootCauseAnalysis  // RCA with its own attachments
   resolution_note?: ResolutionNote
+  // IR (Incident Report) fields
+  has_ir?: boolean
+  ir_number?: string | null
+  ir_raised_at?: string | null
+  ir_expected_resolution_date?: string | null
+  ir_notes?: string | null
+  ir_closed_at?: string | null
 }
-
 export interface TicketsListResponse {
   tickets: Ticket[]
   total: number

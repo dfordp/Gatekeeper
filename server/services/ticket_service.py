@@ -205,7 +205,13 @@ class TicketService:
                     "created_at": event.created_at.isoformat()
                 }
                 for event in ticket.events
-            ] if ticket.events else []
+            ] if ticket.events else [],
+            "has_ir": ticket.has_ir or False,
+            "ir_number": ticket.ir_number,
+            "ir_raised_at": ticket.ir_raised_at.isoformat() if ticket.ir_raised_at else None,
+            "ir_expected_resolution_date": ticket.ir_expected_resolution_date.isoformat() if ticket.ir_expected_resolution_date else None,
+            "ir_notes": ticket.ir_notes,
+            "ir_closed_at": ticket.ir_closed_at.isoformat() if ticket.ir_closed_at else None,
         }
     
     @staticmethod

@@ -5,6 +5,7 @@ import { useState, useEffect, useRef } from "react"
 import { ticketService, CreateTicketRequest, AddRCARequest } from "@/services/ticket.service"
 import { userService, User } from "@/services/user.service"
 import { companyService, Company } from "@/services/company.service"
+import { irService } from "@/services/ir.service"
 import { useTicketCreation } from "@/hooks/useTicketCreation"
 import TicketProgressCard from "./TicketProgressCard"
 import {
@@ -99,8 +100,6 @@ export default function CreateTicketDialog({
   const [engineers, setEngineers] = useState<User[]>([])
   const [loadingEngineers, setLoadingEngineers] = useState(true)
 
-  
-
   // Form state
   const [raisedByUserId, setRaisedByUserId] = useState<string>("")
   const [raisedByUserName, setRaisedByUserName] = useState<string>("")
@@ -122,12 +121,20 @@ export default function CreateTicketDialog({
   const [resolutionSteps, setResolutionSteps] = useState<string>("")
   const [closedAt, setClosedAt] = useState<string>("")
 
+  // IR state (for older tickets that had IR raised)
+  const [hasIR, setHasIR] = useState(false)
+  const [irNumber, setIrNumber] = useState<string>("")
+  const [irVendor, setIrVendor] = useState<string>("siemens")
+  const [irRaisedAt, setIrRaisedAt] = useState<string>("")
+  const [irExpectedResolutionDate, setIrExpectedResolutionDate] = useState<string>("")
+  const [irNotes, setIrNotes] = useState<string>("")
+
   // Attachments state
   const [attachments, setAttachments] = useState<AttachmentFile[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const [rcaAttachments, setRcaAttachments] = useState<AttachmentFile[]>([]);
-  const rcaFileInputRef = useRef<HTMLInputElement>(null)  // NEW
+  const [rcaAttachments, setRcaAttachments] = useState<AttachmentFile[]>([])
+  const rcaFileInputRef = useRef<HTMLInputElement>(null)
 
   // Load data when dialog opens
   useEffect(() => {
@@ -286,193 +293,227 @@ export default function CreateTicketDialog({
     setError(null)
     setLoading(false)
     setRcaAttachments([])
+    // Reset IR fields
+    setHasIR(false)
+    setIrNumber("")
+    setIrVendor("siemens")
+    setIrRaisedAt("")
+    setIrExpectedResolutionDate("")
+    setIrNotes("")
   }
 
-    const handleSubmit = async (e: React.FormEvent) => {
-      e.preventDefault()
-      setError(null)
-    
-      // Validation
-      if (!selectedCompanyId) {
-        setError("Please select a company")
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setError(null)
+
+    // Validation
+    if (!selectedCompanyId) {
+      setError("Please select a company")
+      return
+    }
+
+    if (!raisedByUserId) {
+      setError("Please select who raised this ticket")
+      return
+    }
+
+    if (!subject.trim()) {
+      setError("Subject is required")
+      return
+    }
+
+    if (!description.trim()) {
+      setError("Description is required")
+      return
+    }
+
+    if (isOlderTicket && status === "closed") {
+      if (!rootCauseDescription.trim()) {
+        setError("Root cause description is required for closed tickets")
         return
       }
-    
-      if (!raisedByUserId) {
-        setError("Please select who raised this ticket")
-        return
+    }
+
+    try {
+      setLoading(true)
+
+      // Create ticket request
+      const createRequest: CreateTicketRequest = {
+        subject: subject.trim(),
+        detailed_description: description.trim(),
+        summary: summary.trim() || undefined,
+        company_id: selectedCompanyId,
+        raised_by_user_id: raisedByUserId,
+        category: category || undefined,
+        level: level || undefined,
+        assigned_engineer_id: assignedEngineer || undefined,
+        created_at: isOlderTicket && createdAt ? new Date(createdAt).toISOString() : undefined,
+        ticket_no: ticketNo || undefined,
+        status: isOlderTicket && status ? status : undefined,
+        closed_at:
+          isOlderTicket && status === "closed" && closedAt
+            ? new Date(closedAt).toISOString()
+            : undefined,
       }
-    
-      if (!subject.trim()) {
-        setError("Subject is required")
-        return
-      }
-    
-      if (!description.trim()) {
-        setError("Description is required")
-        return
-      }
-    
-      if (isOlderTicket && status === "closed") {
-        if (!rootCauseDescription.trim()) {
-          setError("Root cause description is required for closed tickets")
-          return
-        }
-      }
-    
-      try {
-        setLoading(true)
-    
-        // Create ticket request
-        const createRequest: CreateTicketRequest = {
-          subject: subject.trim(),
-          detailed_description: description.trim(),
-          summary: summary.trim() || undefined,
-          company_id: selectedCompanyId,
-          raised_by_user_id: raisedByUserId,
-          category: category || undefined,
-          level: level || undefined,
-          assigned_engineer_id: assignedEngineer || undefined,
-          created_at: isOlderTicket && createdAt ? new Date(createdAt).toISOString() : undefined,
-          ticket_no: ticketNo || undefined,
-          status: isOlderTicket && status ? status : undefined,
-          closed_at:
-            isOlderTicket && status === "closed" && closedAt
-              ? new Date(closedAt).toISOString()
-              : undefined,
-        }
-    
-        // Create the ticket
-        const createdTicket = await ticketService.createTicket(createRequest)
-    
-        // ✅ STEP 1: Switch to progress view immediately
-        setDialogStep("progress")
-        setLoading(false)
-    
-        // ✅ STEP 2: Queue all tasks BEFORE starting polling
-        console.log(`✓ Ticket created: ${createdTicket.id}, now queueing all tasks...`)
-        
-        const attachmentPromise = attachments.length > 0 
-          ? processAttachments(createdTicket.id)
-          : Promise.resolve()
-        
-        const rcaPromise = isOlderTicket && status === "closed" && rootCauseDescription.trim()
+
+      // Create the ticket
+      const createdTicket = await ticketService.createTicket(createRequest)
+
+      // ✅ STEP 1: Switch to progress view immediately
+      setDialogStep("progress")
+      setLoading(false)
+
+      // ✅ STEP 2: Queue all tasks BEFORE starting polling
+      console.log(`✓ Ticket created: ${createdTicket.id}, now queueing all tasks...`)
+
+      const attachmentPromise =
+        attachments.length > 0 ? processAttachments(createdTicket.id) : Promise.resolve()
+
+      const rcaPromise =
+        isOlderTicket && status === "closed" && rootCauseDescription.trim()
           ? addRCAAsync(createdTicket.id)
           : Promise.resolve()
-    
-        // Wait for all tasks to be queued
-        await Promise.all([attachmentPromise, rcaPromise])
-        console.log(`✓ All tasks queued for ticket: ${createdTicket.id}`)
-    
-        // ✅ STEP 3: NOW start polling after all tasks are queued
-        ticketCreation.startPolling(createdTicket.id)
-        console.log(`✓ Polling started for ticket: ${createdTicket.id}`)
-    
-      } catch (err: unknown) {
-        const errorMessage = err instanceof Error ? err.message : "Failed to create ticket"
-        const apiError = err as { response?: { data?: { detail?: string } } }
-        setError(apiError?.response?.data?.detail || errorMessage)
-        setLoading(false)
-        setDialogStep("form")
-      }
+
+      const irPromise = hasIR && irNumber.trim() ? createIRAsync(createdTicket.id) : Promise.resolve()
+
+      // Wait for all tasks to be queued
+      await Promise.all([attachmentPromise, rcaPromise, irPromise])
+      console.log(`✓ All tasks queued for ticket: ${createdTicket.id}`)
+
+      // ✅ STEP 3: NOW start polling after all tasks are queued
+      ticketCreation.startPolling(createdTicket.id)
+      console.log(`✓ Polling started for ticket: ${createdTicket.id}`)
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : "Failed to create ticket"
+      const apiError = err as { response?: { data?: { detail?: string } } }
+      setError(apiError?.response?.data?.detail || errorMessage)
+      setLoading(false)
+      setDialogStep("form")
     }
-    
-    // Process attachments - MUST return a Promise
-    const processAttachments = async (ticketId: string): Promise<void> => {
-      try {
-        for (const attachment of attachments) {
-          try {
-            const formData = new FormData()
-            formData.append("file", attachment.file)
-    
-            const token = localStorage.getItem("auth_token")
-    
-            const response = await fetch(`/api/tickets/${ticketId}/upload-attachment`, {
-              method: "POST",
-              body: formData,
-              headers: {
-                ...(token && { Authorization: `Bearer ${token}` }),
-              },
-            })
-    
-            if (!response.ok) {
-              const error = await response.json()
-              console.warn(`Failed to upload attachment ${attachment.name}: ${error.detail}`)
-            } else {
-              console.log(`✓ Attachment uploaded: ${attachment.name}`)
-            }
-          } catch (err) {
-            console.error(`Failed to upload attachment ${attachment.name}:`, err)
+  }
+
+  // Process attachments - MUST return a Promise
+  const processAttachments = async (ticketId: string): Promise<void> => {
+    try {
+      for (const attachment of attachments) {
+        try {
+          const formData = new FormData()
+          formData.append("file", attachment.file)
+
+          const token = localStorage.getItem("auth_token")
+
+          const response = await fetch(`/api/tickets/${ticketId}/upload-attachment`, {
+            method: "POST",
+            body: formData,
+            headers: {
+              ...(token && { Authorization: `Bearer ${token}` }),
+            },
+          })
+
+          if (!response.ok) {
+            const error = await response.json()
+            console.warn(`Failed to upload attachment ${attachment.name}: ${error.detail}`)
+          } else {
+            console.log(`✓ Attachment uploaded: ${attachment.name}`)
           }
+        } catch (err) {
+          console.error(`Failed to upload attachment ${attachment.name}:`, err)
         }
-      } catch (err) {
-        console.error("Error processing attachments:", err)
-        throw err
       }
+    } catch (err) {
+      console.error("Error processing attachments:", err)
+      throw err
     }
-    
-    // Add RCA in background - MUST return a Promise
-    const addRCAAsync = async (ticketId: string): Promise<void> => {
-      try {
-        if (rootCauseDescription.trim().length < 10) {
-          console.warn("Root cause description too short")
-          return
-        }
-    
-        // Upload RCA attachments first
-        const uploadedRcaPaths: string[] = []
-        for (const attachment of rcaAttachments) {
-          try {
-            const formData = new FormData()
-            formData.append("file", attachment.file)
-    
-            const token = localStorage.getItem("auth_token")
-    
-            const response = await fetch(`/api/tickets/${ticketId}/upload-attachment`, {
-              method: "POST",
-              body: formData,
-              headers: {
-                ...(token && { Authorization: `Bearer ${token}` }),
-              },
-            })
-    
-            if (!response.ok) {
-              console.warn(`Failed to upload RCA attachment ${attachment.name}`)
-            } else {
-              const data = await response.json()
-              uploadedRcaPaths.push(data.file_path || attachment.name)
-              console.log(`✓ RCA Attachment uploaded: ${attachment.name}`)
-            }
-          } catch (err) {
-            console.error(`Failed to upload RCA attachment ${attachment.name}:`, err)
+  }
+
+  // Add RCA in background - MUST return a Promise
+  const addRCAAsync = async (ticketId: string): Promise<void> => {
+    try {
+      if (rootCauseDescription.trim().length < 10) {
+        console.warn("Root cause description too short")
+        return
+      }
+
+      // Upload RCA attachments first
+      const uploadedRcaPaths: string[] = []
+      for (const attachment of rcaAttachments) {
+        try {
+          const formData = new FormData()
+          formData.append("file", attachment.file)
+
+          const token = localStorage.getItem("auth_token")
+
+          const response = await fetch(`/api/tickets/${ticketId}/upload-attachment`, {
+            method: "POST",
+            body: formData,
+            headers: {
+              ...(token && { Authorization: `Bearer ${token}` }),
+            },
+          })
+
+          if (!response.ok) {
+            console.warn(`Failed to upload RCA attachment ${attachment.name}`)
+          } else {
+            const data = await response.json()
+            uploadedRcaPaths.push(data.file_path || attachment.name)
+            console.log(`✓ RCA Attachment uploaded: ${attachment.name}`)
           }
+        } catch (err) {
+          console.error(`Failed to upload RCA attachment ${attachment.name}:`, err)
         }
-    
-        const rcaRequest: AddRCARequest = {
-          root_cause: rootCauseDescription.trim(),
-          created_by_user_id: raisedByUserId,
-          contributing_factors: contributingFactors.trim()
-            ? contributingFactors
-                .split("\n")
-                .map((f) => f.trim())
-                .filter((f) => f.length > 0)
-            : undefined,
-          prevention_measures: preventionMeasures.trim() || undefined,
-          resolution_steps: resolutionSteps.trim()
-            ? resolutionSteps
-                .split("\n")
-                .map((s) => s.trim())
-                .filter((s) => s.length > 0)
-            : undefined,
-          ticket_closed_at: closedAt ? new Date(closedAt).toISOString() : null,
-        }
-        await ticketService.createRCA(ticketId, rcaRequest)
-        console.log("✓ RCA added successfully")
-      } catch (err) {
-        console.error("Failed to add RCA:", err)
-        throw err
       }
+
+      const rcaRequest: AddRCARequest = {
+        root_cause: rootCauseDescription.trim(),
+        created_by_user_id: raisedByUserId,
+        contributing_factors: contributingFactors.trim()
+          ? contributingFactors
+              .split("\n")
+              .map((f) => f.trim())
+              .filter((f) => f.length > 0)
+          : undefined,
+        prevention_measures: preventionMeasures.trim() || undefined,
+        resolution_steps: resolutionSteps.trim()
+          ? resolutionSteps
+              .split("\n")
+              .map((s) => s.trim())
+              .filter((s) => s.length > 0)
+          : undefined,
+        ticket_closed_at: closedAt ? new Date(closedAt).toISOString() : null,
+      }
+      await ticketService.createRCA(ticketId, rcaRequest)
+      console.log("✓ RCA added successfully")
+    } catch (err) {
+      console.error("Failed to add RCA:", err)
+      throw err
     }
+  }
+
+  // Create IR for older ticket - MUST return a Promise
+  const createIRAsync = async (ticketId: string): Promise<void> => {
+    try {
+      if (!hasIR || !irNumber.trim()) {
+        console.log("No IR to create")
+        return
+      }
+  
+      const irRequest = {
+        ir_number: irNumber.trim(),
+        vendor: irVendor || "siemens",
+        expected_resolution_date: irExpectedResolutionDate 
+          ? new Date(irExpectedResolutionDate).toISOString() 
+          : undefined,
+        notes: irNotes.trim() || undefined,
+        created_by_user_id: raisedByUserId,
+      }
+  
+      await irService.openIR(ticketId, irRequest)
+      console.log(`✓ Incident Report created: ${irNumber}`)
+    } catch (err) {
+      console.error("Failed to create Incident Report:", err)
+      throw err
+    }
+  }
 
   const shouldShowRCA = isOlderTicket && status === "closed"
 
@@ -852,9 +893,7 @@ export default function CreateTicketDialog({
                   disabled={loading}
                   className="rounded"
                 />
-                <span className="font-semibold">
-                  This is an older ticket (import from legacy system)
-                </span>
+                <span className="font-semibold">This is an older ticket (import from legacy system)</span>
               </Label>
 
               {isOlderTicket && (
@@ -899,11 +938,101 @@ export default function CreateTicketDialog({
                       </SelectContent>
                     </Select>
                   </div>
+
+                  {/* IR Checkbox */}
+                  <div className="space-y-2 p-3 bg-blue-100 rounded border border-blue-300 mt-4">
+                    <Label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={hasIR}
+                        onChange={(e) => setHasIR(e.target.checked)}
+                        disabled={loading}
+                        className="rounded"
+                      />
+                      <span className="font-semibold text-sm">
+                        This ticket had an Incident Report (IR) raised
+                      </span>
+                    </Label>
+                  </div>
+
+                  {/* IR Section - Only when IR checkbox is checked */}
+                  {hasIR && (
+                    <div className="space-y-3 p-3 border rounded bg-cyan-50">
+                      <div className="flex items-center justify-between">
+                        <span className="font-semibold text-sm text-cyan-900">Incident Report Details</span>
+                        <button
+                          type="button"
+                          onClick={() => setHasIR(false)}
+                          className="text-cyan-600 hover:text-cyan-800"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label htmlFor="ir-number">IR Number *</Label>
+                        <Input
+                          id="ir-number"
+                          placeholder="e.g., IR-2025-001"
+                          value={irNumber}
+                          onChange={(e) => setIrNumber(e.target.value)}
+                          disabled={loading}
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label htmlFor="ir-vendor">Vendor</Label>
+                        <Select value={irVendor} onValueChange={setIrVendor}>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select vendor..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="siemens">Siemens</SelectItem>
+                            <SelectItem value="other">Other</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label htmlFor="ir-raised-at">IR Raised Date</Label>
+                        <Input
+                          id="ir-raised-at"
+                          type="datetime-local"
+                          value={irRaisedAt}
+                          onChange={(e) => setIrRaisedAt(e.target.value)}
+                          disabled={loading}
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label htmlFor="ir-expected-resolution">Expected Resolution Date</Label>
+                        <Input
+                          id="ir-expected-resolution"
+                          type="datetime-local"
+                          value={irExpectedResolutionDate}
+                          onChange={(e) => setIrExpectedResolutionDate(e.target.value)}
+                          disabled={loading}
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label htmlFor="ir-notes">IR Notes</Label>
+                        <Textarea
+                          id="ir-notes"
+                          placeholder="Notes about the incident report..."
+                          value={irNotes}
+                          onChange={(e) => setIrNotes(e.target.value)}
+                          disabled={loading}
+                          rows={2}
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
 
-                        {/* RCA Section - Only for closed older tickets */}
+            {/* RCA Section - Only for closed older tickets */}
             {shouldShowRCA && (
               <div className="space-y-4 p-4 border rounded-lg bg-amber-50">
                 <div className="font-semibold text-amber-900">
@@ -971,8 +1100,8 @@ export default function CreateTicketDialog({
                     rows={2}
                   />
                 </div>
-                
-                {/* NEW: RCA Attachments */}
+
+                {/* RCA Attachments */}
                 <div className="space-y-2 p-3 bg-white rounded border">
                   <Label className="font-semibold flex items-center gap-2">
                     <FileUp className="h-4 w-4" />
