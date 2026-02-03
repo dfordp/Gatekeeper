@@ -481,25 +481,37 @@ class TicketService:
                 Ticket.status.in_(["closed", "resolved"])
             ).count()
             
-            # Average resolution time
             avg_resolution_time = 0
-            if closed_tickets > 0:
+            closed_tickets_for_period = query.filter(
+                Ticket.status.in_(["closed", "resolved"]),
+                Ticket.closed_at.isnot(None),
+                Ticket.closed_at >= start_date,
+                Ticket.closed_at <= now
+            ).all()
+            
+            logger.info(f"Found {len(closed_tickets_for_period)} closed tickets in period")
+            
+            if closed_tickets_for_period:
                 closed_ticket_times = []
-                closed_tickets_query = query.filter(
-                    Ticket.closed_at.isnot(None)
-                ).all()
-                
-                for ticket in closed_tickets_query:
+                for ticket in closed_tickets_for_period:
                     if ticket.closed_at and ticket.created_at:
                         resolution_time = (ticket.closed_at - ticket.created_at).total_seconds()
-                        closed_ticket_times.append(resolution_time)
+                        logger.debug(f"Ticket {ticket.ticket_no}: resolution_time={resolution_time}s")
+                        # Only count valid resolutions (positive time)
+                        if resolution_time >= 0:
+                            closed_ticket_times.append(resolution_time)
+                        else:
+                            logger.warning(f"Ticket {ticket.ticket_no} has negative resolution time: {resolution_time}s (created_at={ticket.created_at}, closed_at={ticket.closed_at})")
+                
+                logger.info(f"Valid closed ticket times: {len(closed_ticket_times)} out of {len(closed_tickets_for_period)}")
                 
                 if closed_ticket_times:
                     avg_resolution_time = sum(closed_ticket_times) / len(closed_ticket_times)
                     # Convert to hours
                     avg_resolution_time = round(avg_resolution_time / 3600, 2)
-            
-            # Resolution rate
+                    logger.info(f"Average resolution time: {avg_resolution_time} hours")
+                        
+                        # Resolution rate
             resolution_rate = 0
             if total_tickets > 0:
                 resolution_rate = round((closed_tickets / total_tickets) * 100, 2)

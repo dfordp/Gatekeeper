@@ -18,9 +18,10 @@ import os
 from middleware.auth_middleware import get_current_admin
 from services.ticket_creation_service import TicketCreationService
 from services.file_upload_service import FileUploadService
-from services.ticket_request_queue import TicketRequestQueue, TaskType
+from services.ticket_request_queue import TicketRequestQueue
 from utils.exceptions import ValidationError, NotFoundError, ConflictError
 from core.logger import get_logger
+from middleware.cache_decorator import cache_endpoint, invalidate_on_mutation
 
 logger = get_logger(__name__)
 
@@ -83,11 +84,13 @@ class UpdateTicketRequest(BaseModel):
     detailed_description: Optional[str] = Field(None, min_length=10, description="Full description")
     category: Optional[str] = Field(None, description="Ticket category")
     level: Optional[str] = Field(None, description="Priority level (level-1, level-2, level-3)")
+    created_at: Optional[str] = Field(None, description="ISO format creation date")  # ADD THIS
 
 
 # ==================== ENDPOINTS ====================
 
 @router.post("/create")
+@invalidate_on_mutation(tags=["ticket:list", "analytics", "search:*"])
 async def create_ticket(
     request: CreateTicketRequest,
     admin_payload: dict = Depends(get_current_admin)
@@ -153,6 +156,7 @@ async def create_ticket(
 
 
 @router.get("/creation-status/{ticket_id}")
+@cache_endpoint(ttl=10, tag="ticket:status", key_params=["ticket_id"])
 async def get_ticket_creation_status(ticket_id: str):
     """
     Get the creation status of a ticket, including all async tasks (Phase 1)
@@ -198,6 +202,7 @@ async def get_ticket_creation_status(ticket_id: str):
 
 
 @router.get("/queue-status/{task_id}")
+@cache_endpoint(ttl=10, tag="queue:status", key_params=["task_id"])
 async def get_queue_task_status(task_id: str):
     """
     Get status of a specific queued task (Phase 1)
@@ -231,6 +236,7 @@ async def get_queue_task_status(task_id: str):
 
 
 @router.get("/queue/stats")
+@cache_endpoint(ttl=30, tag="queue:stats", key_params=[])
 async def get_queue_statistics():
     """
     Get overall queue statistics (Phase 1)
@@ -376,6 +382,7 @@ async def add_attachment(
 
 
 @router.post("/{ticket_id}/rca")
+@invalidate_on_mutation(tags=["ticket:rca", "ticket:detail", "search:*"])
 async def add_rca(
     ticket_id: str,
     request: AddRCARequest
@@ -421,6 +428,7 @@ async def add_rca(
 
 
 @router.post("/{ticket_id}/resolution")
+@invalidate_on_mutation(tags=["ticket:detail", "analytics"])
 async def add_resolution_note(
     ticket_id: str,
     request: AddResolutionNoteRequest,
@@ -450,6 +458,7 @@ async def add_resolution_note(
 
 
 @router.delete("/{ticket_id}")
+@invalidate_on_mutation(tags=["ticket:detail", "ticket:list", "search:*", "analytics"])
 async def delete_ticket(
     ticket_id: str,
     admin_payload: dict = Depends(get_current_admin)
@@ -469,6 +478,7 @@ async def delete_ticket(
 
 
 @router.put("/{ticket_id}")
+@invalidate_on_mutation(tags=["ticket:detail", "ticket:list", "analytics"])  # Add analytics to invalidation
 async def update_ticket(
     ticket_id: str,
     request: UpdateTicketRequest,
@@ -476,6 +486,14 @@ async def update_ticket(
 ):
     """Update ticket details"""
     try:
+        # Parse created_at if provided
+        update_data = request.dict(exclude_unset=True)
+        created_at = None
+        if "created_at" in update_data and update_data["created_at"]:
+            created_at = datetime.fromisoformat(
+                update_data["created_at"].replace('Z', '+00:00')
+            )
+        
         result = TicketCreationService.update_ticket(
             ticket_id=ticket_id,
             subject=request.subject,
@@ -483,7 +501,8 @@ async def update_ticket(
             detailed_description=request.detailed_description,
             category=request.category,
             level=request.level,
-            admin_id=admin_payload.get("id")
+            created_at=created_at,  # ADD THIS LINE
+            admin_id=admin_payload.get("id"),
         )
         return result
     except ValidationError as e:
@@ -496,6 +515,7 @@ async def update_ticket(
 
 
 @router.get("/{ticket_id}/attachments/{attachment_id}/download")
+@cache_endpoint(ttl=600, tag="attachment:download", key_params=["attachment_id"])
 async def download_attachment(
     ticket_id: str,
     attachment_id: str
@@ -552,6 +572,7 @@ async def download_attachment(
 
 
 @router.delete("/{ticket_id}/attachments/{attachment_id}")
+@invalidate_on_mutation(tags=["ticket:detail", "search:*"])
 async def delete_attachment(
     ticket_id: str,
     attachment_id: str
@@ -642,6 +663,7 @@ async def upload_rca_attachment(
         raise HTTPException(status_code=500, detail=f"Failed to upload RCA attachment: {str(e)}")
 
 @router.delete("/{ticket_id}/rca-attachments/{attachment_id}")
+@invalidate_on_mutation(tags=["ticket:rca", "search:*"])
 async def delete_rca_attachment(
     ticket_id: str,
     attachment_id: str,

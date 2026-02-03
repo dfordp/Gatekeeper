@@ -7,6 +7,7 @@ from typing import Optional, List
 from core.database import SessionLocal
 from services.rca_service import RCAService
 from utils.exceptions import ValidationError, NotFoundError
+from middleware.cache_decorator import cache_endpoint, cache_endpoint_with_body, invalidate_on_mutation
 
 
 # ==================== REQUEST MODELS ====================
@@ -28,12 +29,13 @@ router = APIRouter(prefix="/api/rca", tags=["RCA"])
 
 
 @router.post("/tickets/{ticket_id}/rca")
+@invalidate_on_mutation(tags=["ticket:rca", "ticket:detail", "search:*"])
 async def create_rca(
     ticket_id: str,
     request: CreateRCARequest
 ):
     """
-    Create or update RCA for a ticket with attachments and documentation.
+    Create or update RCA for a ticket with attachments and documentation (invalidates related caches).
     
     Args:
         ticket_id: Ticket UUID
@@ -62,9 +64,10 @@ async def create_rca(
 
 
 @router.get("/tickets/{ticket_id}/rca")
+@cache_endpoint(ttl=120, tag="ticket:rca", key_params=["ticket_id"])
 async def get_rca(ticket_id: str):
     """
-    Get RCA with all details and attachments for a ticket.
+    Get RCA details with caching
     
     Args:
         ticket_id: Ticket UUID
@@ -82,6 +85,12 @@ async def get_rca(ticket_id: str):
 
 
 @router.get("/search")
+@cache_endpoint_with_body(
+    ttl=120,
+    tag="search:rca",
+    request_body_fields=["keyword"],
+    endpoint_name="search_rcas"
+)
 async def search_rcas(
     keyword: str,
     company_id: Optional[str] = None,

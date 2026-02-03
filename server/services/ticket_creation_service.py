@@ -906,6 +906,7 @@ class TicketCreationService:
         detailed_description: Optional[str] = None,
         category: Optional[str] = None,
         level: Optional[str] = None,
+        created_at: Optional[datetime] = None,
         admin_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """Update ticket details"""
@@ -941,6 +942,8 @@ class TicketCreationService:
                     raise ValidationError(f"Invalid level. Must be one of: {', '.join(valid_levels)}")
                 ticket.level = level
             
+            if created_at is not None:
+                ticket.created_at = created_at
             ticket.updated_at = datetime.utcnow()
             db.flush()
             
@@ -956,6 +959,8 @@ class TicketCreationService:
                 changes["category"] = category.strip() if category else None
             if level is not None:
                 changes["level"] = level
+            if created_at is not None:  
+                changes["created_at"] = created_at.isoformat()
             
             ticket_event = TicketEvent(
                 ticket_id=ticket_uuid,

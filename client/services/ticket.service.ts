@@ -131,7 +131,7 @@ export interface AddAttachmentRequest {
 }
 
 export interface AddRCARequest {
-  root_cause_description: string
+  root_cause: string
   created_by_user_id: string
   contributing_factors?: string[]
   prevention_measures?: string
@@ -290,6 +290,7 @@ export const ticketService = {
     detailed_description?: string
     category?: string
     level?: string
+    created_at?: string  // ADD THIS
   }): Promise<any> {
     const response = await apiClient.put(
       `/api/tickets/${ticketId}`,
@@ -297,7 +298,6 @@ export const ticketService = {
     )
     return response.data
   },
-
   // Get RCA for a ticket
   async getRCA(ticketId: string): Promise<RootCauseAnalysis | null> {
     try {

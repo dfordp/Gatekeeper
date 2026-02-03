@@ -43,6 +43,7 @@ interface EditTicketDialogProps {
     detailed_description: string
     category?: string
     level?: string
+    created_at?: string  // ADD THIS
   }) => Promise<void>
   fetchTicket?: () => Promise<void>
   isLoading: boolean
@@ -107,6 +108,9 @@ export default function EditTicketDialog({
   const [resolutionSteps, setResolutionSteps] = useState<string>(
     ticket.rca?.resolution_steps?.join("\n") || ""
   )
+  const [createdAt, setCreatedAt] = useState(
+    new Date(ticket.created_at).toISOString().slice(0, 16)
+  )
 
   const [rcaAttachments, setRcaAttachments] = useState<AttachmentFile[]>([])
   const [closedAt, setClosedAt] = useState(
@@ -117,25 +121,7 @@ export default function EditTicketDialog({
 
   const rcaFileInputRef = useRef<HTMLInputElement>(null)
 
-  // Handlers for ticket attachments
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files
-    if (!files) return
-
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i]
-      const id = Math.random().toString(36).substring(2, 11)
-      setNewAttachments((prev) => [...prev, { id, name: file.name, file }])
-    }
-
-    if (fileInputRef.current) {
-      fileInputRef.current.value = ""
-    }
-  }
-
-  const removeNewAttachment = (id: string) => {
-    setNewAttachments((prev) => prev.filter((att) => att.id !== id))
-  }
+  
 
   // Handlers for RCA attachments
   const handleRcaFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -289,13 +275,14 @@ export default function EditTicketDialog({
 
     try {
       // Save basic ticket info
-      await onSave({
-        subject: subject.trim(),
-        summary: summary.trim() || undefined,
-        detailed_description: description.trim(),
-        category: category || undefined,
-        level: level || undefined,
-      })
+        await onSave({
+          subject: subject.trim(),
+          summary: summary.trim() || undefined,
+          detailed_description: description.trim(),
+          category: category || undefined,
+          level: level || undefined,
+          created_at: new Date(createdAt).toISOString(),  // ADD THIS LINE
+        })
 
       // Upload ticket attachments
       if (newAttachments.length > 0) {
@@ -488,6 +475,20 @@ export default function EditTicketDialog({
                     </SelectContent>
                   </Select>
                 </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="created-at" className="flex items-center gap-2">
+                  <Calendar className="h-4 w-4" />
+                  Date Created
+                </Label>
+                <Input
+                  id="created-at"
+                  type="datetime-local"
+                  value={createdAt}
+                  onChange={(e) => setCreatedAt(e.target.value)}
+                  disabled={isLoading}
+                />
               </div>
             </TabsContent>
 

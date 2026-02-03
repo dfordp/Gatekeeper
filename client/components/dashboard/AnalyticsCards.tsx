@@ -10,6 +10,14 @@ import {
   XCircle,
 } from "lucide-react"
 
+interface ResolutionTimeFormat {
+  weeks: number
+  days: number
+  hours: number
+  total_hours: number
+  formatted: string
+}
+
 interface Analytics {
   total_tickets: number
   open_tickets: number
@@ -17,7 +25,8 @@ interface Analytics {
   resolved: number
   closed: number
   recent_tickets: number
-  avg_resolution_time_hours: number
+  avg_resolution_time_hours?: number
+  avg_resolution_time?: ResolutionTimeFormat | number
   categories: Record<string, number> | null
   levels: Record<string, number> | null
 }
@@ -25,6 +34,32 @@ interface Analytics {
 const formatValue = (value: string | number | null | undefined, defaultValue: string = "—"): string => {
   if (value === null || value === undefined) return defaultValue
   return String(value)
+}
+
+const getResolutionTimeDisplay = (resolutionTime: any): string => {
+  // Handle new format (object with weeks, days, hours)
+  if (typeof resolutionTime === 'object' && resolutionTime?.formatted) {
+    return resolutionTime.formatted
+  }
+  
+  // Handle legacy format (just hours as number)
+  if (typeof resolutionTime === 'number') {
+    const hours = resolutionTime
+    const weeks = Math.floor(hours / (24 * 7))
+    const remaining = hours % (24 * 7)
+    const days = Math.floor(remaining / 24)
+    const mins = Math.round((remaining % 24) * 100) / 100
+    
+    if (weeks > 0) {
+      return `${weeks}w ${days}d ${mins}h`
+    } else if (days > 0) {
+      return `${days}d ${mins}h`
+    } else {
+      return `${mins}h`
+    }
+  }
+  
+  return "—"
 }
 
 const StatCard = ({
@@ -68,6 +103,10 @@ export default function AnalyticsCards({ analytics }: { analytics: Analytics | n
     )
   }
 
+  const resolutionTimeDisplay = getResolutionTimeDisplay(
+    analytics.avg_resolution_time || analytics.avg_resolution_time_hours
+  )
+
   const cards = [
     {
       title: "Total Tickets",
@@ -101,11 +140,7 @@ export default function AnalyticsCards({ analytics }: { analytics: Analytics | n
     },
     {
       title: "Avg Resolution Time",
-      value:
-        analytics.avg_resolution_time_hours !== null &&
-        analytics.avg_resolution_time_hours !== undefined
-          ? `${analytics.avg_resolution_time_hours}h`
-          : "—",
+      value: resolutionTimeDisplay,
       icon: Clock,
       color: "bg-purple-50 text-purple-600",
     },

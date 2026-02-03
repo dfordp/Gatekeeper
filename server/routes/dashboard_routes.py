@@ -6,6 +6,8 @@ from middleware.auth_middleware import get_current_admin
 from services.ticket_service import TicketService
 from utils.exceptions import ValidationError, NotFoundError
 from core.logger import get_logger
+from middleware.cache_decorator import cache_endpoint, invalidate_on_mutation
+from core.cache_config import CacheTTL
 
 logger = get_logger(__name__)
 
@@ -19,14 +21,14 @@ class AssignTicketRequest(BaseModel):
     engineer_id: str
 
 @router.get("/tickets")
+@cache_endpoint(ttl=30, tag="ticket:list", key_params=["company_id", "status"])
 async def get_tickets(
     status: str = Query(None),
     search: str = Query(None),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
-    admin_payload: dict = Depends(get_current_admin)
 ):
-    """Get paginated list of tickets"""
+    """Get paginated list of tickets with caching"""
     try:
         result = TicketService.get_tickets(
             status=status,
@@ -43,11 +45,11 @@ async def get_tickets(
 
 
 @router.get("/tickets/{ticket_id}")
+@cache_endpoint(ttl=60, tag="ticket:detail", key_params=["ticket_id"])
 async def get_ticket(
     ticket_id: str,
-    admin_payload: dict = Depends(get_current_admin)
 ):
-    """Get ticket details"""
+    """Get ticket details with caching"""
     try:
         ticket = TicketService.get_ticket_by_id(ticket_id)
         return ticket
@@ -61,12 +63,13 @@ async def get_ticket(
 
 
 @router.put("/tickets/{ticket_id}/status")
+@invalidate_on_mutation(tags=["ticket:detail", "ticket:list", "analytics"])
 async def update_ticket_status(
     ticket_id: str,
     request: UpdateStatusRequest,
     admin_payload: dict = Depends(get_current_admin)
 ):
-    """Update ticket status"""
+    """Update ticket status (invalidates related caches)"""
     try:
         result = TicketService.update_ticket_status(
             ticket_id=ticket_id,
@@ -107,11 +110,12 @@ async def assign_ticket(
 
 
 @router.get("/analytics")
+@cache_endpoint(ttl=300, tag="analytics", key_params=["company_id", "period"])
 async def get_analytics(
     days: int = Query(30, ge=1, le=365),
     admin_payload: dict = Depends(get_current_admin)
 ):
-    """Get ticket analytics"""
+    """Get ticket details with caching"""
     try:
         analytics = TicketService.get_analytics(days=days)
         return analytics

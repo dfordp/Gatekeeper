@@ -58,3 +58,12 @@ APP_DEBUG = os.getenv("APP_DEBUG", "False").lower() == "true"
 
 # ==================== CORS CONFIGURATION ====================
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:8000").split(",")
+
+# ==================== REDIS CACHE CONFIGURATION ====================
+REDIS_ENABLED = os.getenv("REDIS_ENABLED", "True").lower() == "true"
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_DB = int(os.getenv("REDIS_DB", "0"))
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", None)
+CACHE_DEFAULT_TTL = int(os.getenv("CACHE_DEFAULT_TTL", "60"))  # seconds
+CACHE_MAX_SIZE = int(os.getenv("CACHE_MAX_SIZE", "1000"))  # max entries

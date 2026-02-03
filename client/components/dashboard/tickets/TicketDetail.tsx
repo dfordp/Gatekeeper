@@ -112,7 +112,14 @@ export default function TicketDetail({ ticketId }: TicketDetailProps) {
     }
   }
 
-  const handleEditTicket = async (data: any) => {
+  const handleEditTicket = async (data: {
+    subject: string
+    summary?: string
+    detailed_description: string
+    category?: string
+    level?: string
+    created_at?: string  
+}) => {
     try {
       setActionLoading(true)
       const updated = await ticketService.updateTicket(ticketId, data)

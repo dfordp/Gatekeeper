@@ -449,7 +449,7 @@ export default function CreateTicketDialog({
         }
     
         const rcaRequest: AddRCARequest = {
-          root_cause_description: rootCauseDescription.trim(),
+          root_cause: rootCauseDescription.trim(),
           created_by_user_id: raisedByUserId,
           contributing_factors: contributingFactors.trim()
             ? contributingFactors
@@ -466,7 +466,7 @@ export default function CreateTicketDialog({
             : undefined,
           ticket_closed_at: closedAt ? new Date(closedAt).toISOString() : null,
         }
-        await ticketService.addRCA(ticketId, rcaRequest)
+        await ticketService.createRCA(ticketId, rcaRequest)
         console.log("✓ RCA added successfully")
       } catch (err) {
         console.error("Failed to add RCA:", err)

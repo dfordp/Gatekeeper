@@ -31,6 +31,8 @@ from core.database import init_db, test_connection
 from core.config import CORS_ORIGINS, TELEGRAM_TOKEN, TELEGRAM_API, GROQ_API_KEY, MODEL, VISION_MODEL
 from core.logger import get_logger
 
+from services.redis_cache_service import init_cache, close_cache
+
 # Middleware
 from middleware.error_handler import register_error_handlers
 from middleware.audit_middleware import audit_middleware
@@ -44,6 +46,7 @@ from routes.ticket_routes import router as ticket_routes_router
 from routes.company_routes import router as company_routes_router
 from routes.search_routes import router as search_router
 from routes.rca_routes import router as rca_router
+from routes.cache_routes import router as cache_router
 
 # Legacy session management (keeping for bot compatibility)
 from session import (
@@ -128,7 +131,7 @@ app.include_router(ticket_routes_router)
 app.include_router(company_routes_router)
 app.include_router(search_router)
 app.include_router(rca_router)
-
+app.include_router(cache_router)
 
 # Legacy HTTP routes (existing bot)
 app.include_router(http_router)
@@ -1006,26 +1009,34 @@ async def telegram_webhook(req: Request):
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize database and test connection on startup"""
-    logger.info("🚀 Starting up Gatekeeper Support Platform...")
+    """Initialize cache and database on startup"""
+    logger.info("Starting Gatekeeper application...")
     
-    # Test database connection
-    if not test_connection():
-        logger.error("❌ Failed to connect to database on startup!")
-        raise RuntimeError("Database connection failed")
+    # Initialize database
+    init_db()
     
-    # Initialize database tables
-    if not init_db():
-        logger.error("❌ Failed to initialize database on startup!")
-        raise RuntimeError("Database initialization failed")
+    # Initialize cache
+    try:
+        await init_cache()
+        logger.info("✓ Cache service initialized")
+    except Exception as e:
+        logger.warning(f"Cache initialization failed, continuing without cache: {e}")
     
-    logger.info("✅ Gatekeeper application started successfully")
+    logger.info("✓ Gatekeeper started successfully")
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Cleanup on shutdown"""
-    logger.info("🛑 Shutting down Gatekeeper Support Platform...")
+    """Clean up resources on shutdown"""
+    logger.info("Shutting down Gatekeeper...")
+    
+    try:
+        await close_cache()
+    except Exception as e:
+        logger.error(f"Error closing cache: {e}")
+    
+    logger.info("✓ Gatekeeper shut down")
+
 
 
 # ==================== HEALTH CHECKS ====================

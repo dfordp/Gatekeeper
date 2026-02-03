@@ -8,6 +8,7 @@ from middleware.auth_middleware import get_current_admin
 from services.user_service import UserService
 from utils.exceptions import ValidationError, NotFoundError, ConflictError
 from core.logger import get_logger
+from middleware.cache_decorator import cache_endpoint, invalidate_on_mutation
 
 logger = get_logger(__name__)
 
@@ -36,6 +37,7 @@ def check_admin_permission(admin_payload: dict) -> bool:
 
 
 @router.post("/")
+@invalidate_on_mutation(tags=["user:list"])
 async def create_user(
     req: CreateUserRequest,
     admin_payload: dict = Depends(get_current_admin)
@@ -59,6 +61,7 @@ async def create_user(
 
 
 @router.get("/")
+@cache_endpoint(ttl=600, tag="user:list", key_params=["company_id"])
 async def get_users(
     company_id: Optional[str] = Query(None),
     role: Optional[str] = Query(None),
@@ -83,6 +86,7 @@ async def get_users(
 
 
 @router.get("/{user_id}")
+@cache_endpoint(ttl=600, tag="user:detail", key_params=["user_id"])
 async def get_user(
     user_id: str,
     admin_payload: dict = Depends(get_current_admin)
@@ -101,6 +105,7 @@ async def get_user(
 
 
 @router.put("/{user_id}")
+@invalidate_on_mutation(tags=["user:detail", "user:list"])
 async def update_user(
     user_id: str,
     req: UpdateUserRequest,
@@ -124,6 +129,7 @@ async def update_user(
         raise HTTPException(status_code=500, detail="Failed to update user")
 
 @router.delete("/{user_id}")
+@invalidate_on_mutation(tags=["user:detail", "user:list"])
 async def delete_user(
     user_id: str,
     admin_payload: dict = Depends(get_current_admin)

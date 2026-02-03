@@ -7,6 +7,7 @@ from middleware.auth_middleware import get_current_admin
 from services.company_service import CompanyService
 from utils.exceptions import ValidationError, NotFoundError, ConflictError
 from core.logger import get_logger
+from middleware.cache_decorator import cache_endpoint, invalidate_on_mutation
 
 logger = get_logger(__name__)
 
@@ -19,6 +20,7 @@ class CreateCompanyRequest(BaseModel):
 
 
 @router.post("/create")
+@invalidate_on_mutation(tags=["company:list"])
 async def create_company(
     request: CreateCompanyRequest,
     admin_payload: dict = Depends(get_current_admin)
@@ -40,6 +42,7 @@ async def create_company(
 
 
 @router.get("")
+@cache_endpoint(ttl=3600, tag="company:list", key_params=[])
 async def get_companies(
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
@@ -57,6 +60,7 @@ async def get_companies(
 
 
 @router.get("/{company_id}")
+@cache_endpoint(ttl=3600, tag="company:detail", key_params=["company_id"])
 async def get_company(
     company_id: str,
     admin_payload: dict = Depends(get_current_admin)

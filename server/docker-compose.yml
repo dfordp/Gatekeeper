@@ -1,6 +1,26 @@
 version: '3.8'
 
 services:
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: gatekeeper_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --appendfsync everysec
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - gatekeeper_network
+    restart: unless-stopped
+    environment:
+      - REDIS_REPLICATION_DISKLESS=yes
+
   # PostgreSQL Database
   postgres:
     image: postgres:16-alpine
@@ -20,6 +40,7 @@ services:
       retries: 5
     networks:
       - gatekeeper_network
+    restart: unless-stopped
 
   # Qdrant Vector Database
   qdrant:
@@ -53,6 +74,8 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_started
+      redis:
+        condition: service_healthy
     environment:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - GROQ_API_KEY=${GROQ_API_KEY}
@@ -62,6 +85,12 @@ services:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - QDRANT_API_KEY=qdrant_secure_key_123
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - REDIS_PASSWORD=
+      - REDIS_ENABLED=True
+      - CACHE_DEFAULT_TTL=60
     ports:
       - "8000:8000"
     volumes:
@@ -72,6 +101,7 @@ services:
     restart: unless-stopped
 
 volumes:
+  redis_data:
   postgres_data:
   qdrant_data:
 
