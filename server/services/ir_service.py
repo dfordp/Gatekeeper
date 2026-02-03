@@ -140,9 +140,7 @@ class IRService:
             # If status is resolved/closed, mark IR as closed
             if status in ["resolved", "closed"]:
                 ir.resolved_at = datetime.utcnow()
-                ticket.ir_closed_at = datetime.utcnow()
-                ticket.has_ir = False
-            
+                ticket.ir_closed_at = datetime.utcnow()            
             db.flush()
             
             # Log IR event

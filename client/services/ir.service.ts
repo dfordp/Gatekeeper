@@ -37,7 +37,7 @@ export const irService = {
       `/api/tickets/${ticketId}/ir/open`,
       data
     )
-    return response.data
+    return response.data as IncidentReport
   },
 
   // Update IR status
@@ -55,28 +55,13 @@ export const irService = {
       `/api/ir/${irId}/status`,
       data
     )
-    return response.data
-  },
-
-  // Close an IR
-  async closeIR(
-    irId: string,
-    data: {
-      resolution_notes?: string
-      closed_by_user_id?: string
-    }
-  ): Promise<IncidentReport> {
-    const response = await apiClient.post(
-      `/api/ir/${irId}/close`,
-      data
-    )
-    return response.data
+    return response.data as IncidentReport
   },
 
   // Get IR details
   async getIR(irId: string): Promise<IncidentReport> {
     const response = await apiClient.get(`/api/ir/${irId}`)
-    return response.data
+    return response.data as IncidentReport
   },
 
   // Get all IRs for a ticket
@@ -84,12 +69,12 @@ export const irService = {
     const response = await apiClient.get(
       `/api/tickets/${ticketId}/ir`
     )
-    return response.data
+    return response.data as IncidentReport[]
   },
 
   // Get all open IRs
   async getOpenIRs(): Promise<OpenIR[]> {
     const response = await apiClient.get(`/api/ir/open`)
-    return response.data
+    return response.data as OpenIR[]
   },
 }

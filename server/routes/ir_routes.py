@@ -44,19 +44,21 @@ async def open_ir(
     request: Request
 ):
     try:
-        # Get user_id from header or use the provided one
+        # Extract company_id and user_id from the ticket first
+        from core.database import SessionLocal, Ticket
+        from uuid import UUID
+        db = SessionLocal()
+        ticket = db.query(Ticket).filter(Ticket.id == UUID(ticket_id)).first()
+        if not ticket:
+            db.close()
+            raise NotFoundError("Ticket not found")
+        
+        # Get user_id from request or use ticket's raised_by_user_id
         user_id = request_data.created_by_user_id
         if not user_id:
-            # Try to extract from auth header
-            auth_header = request.headers.get("Authorization", "")
-            if auth_header.startswith("Bearer "):
-                # For now, we'll use the provided user_id or a default
-                # In production, decode the JWT to get the actual user
-                user_id = None
-        
-        # In open_ir route, after extracting company_id from ticket
-        if not user_id and ticket:
             user_id = str(ticket.raised_by_user_id)
+        
+        db.close()
         
         result = IRService.open_ir(
             ticket_id=ticket_id,
@@ -69,21 +71,14 @@ async def open_ir(
         
         # Create embedding for the IR
         try:
-            # Extract company_id from the ticket
-            from core.database import SessionLocal, Ticket
-            from uuid import UUID
-            db = SessionLocal()
-            ticket = db.query(Ticket).filter(Ticket.id == UUID(ticket_id)).first()
-            if ticket:
-                EmbeddingManager.add_ir_embedding(
-                    ticket_id=ticket_id,
-                    ir_id=result.get("id"),
-                    company_id=str(ticket.company_id),
-                    ir_number=result.get("ir_number"),
-                    vendor=result.get("vendor"),
-                    notes=request_data.notes
-                )
-            db.close()
+            EmbeddingManager.add_ir_embedding(
+                ticket_id=ticket_id,
+                ir_id=result.get("id"),
+                company_id=str(ticket.company_id),
+                ir_number=result.get("ir_number"),
+                vendor=result.get("vendor"),
+                notes=request_data.notes
+            )
         except Exception as e:
             logger.warning(f"Failed to create IR embedding: {e}")
         

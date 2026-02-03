@@ -153,31 +153,6 @@ export default function IRDialog({
     }
   }
 
-  const handleCloseIR = async () => {
-    if (!ir) return
-
-    setLoading(true)
-    setError(null)
-    setSuccess(null)
-
-    try {
-      await irService.closeIR(ir.id, {
-        resolution_notes: updateNotes || undefined,
-      })
-
-      setSuccess("IR closed successfully")
-
-      setTimeout(() => {
-        onIRUpdated()
-        onOpenChange(false)
-      }, 1500)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to close IR")
-    } finally {
-      setLoading(false)
-    }
-  }
-
   const getStatusIcon = (status: string) => {
     switch (status) {
       case "open":
@@ -397,15 +372,6 @@ export default function IRDialog({
                 >
                   {loading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
                   Update Status
-                </Button>
-                <Button
-                  onClick={handleCloseIR}
-                  variant="outline"
-                  disabled={loading}
-                  className="flex-1"
-                >
-                  {loading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                  Close IR
                 </Button>
               </div>
             </div>

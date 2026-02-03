@@ -239,11 +239,10 @@ export default function TicketDetail({ ticketId }: TicketDetailProps) {
             <div className="flex items-center gap-2">
               <AlertCircle className="h-5 w-5 text-blue-600" />
               <div>
-                <p className="font-semibold text-blue-900">Incident Report Active</p>
+                <p className="font-semibold text-blue-900">Incident Report</p>
                 <p className="text-sm text-blue-800">{existingIR.ir_number}</p>
                 <p className="text-xs text-blue-700 mt-1">
-                  Status: <span className="font-semibold">{existingIR.status}</span> | 
-                  Vendor: <span className="font-semibold">{existingIR.vendor}</span>
+                  Status: <span className="font-semibold">{existingIR.status}</span> 
                 </p>
               </div>
             </div>
