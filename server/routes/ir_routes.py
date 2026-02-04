@@ -19,6 +19,8 @@ class OpenIRRequest(BaseModel):
     ir_number: str
     vendor: Optional[str] = "siemens"
     expected_resolution_date: Optional[datetime] = None
+    ir_raised_at: Optional[str] = None  # NEW: ISO string format
+    closed_at: Optional[str] = None  # NEW: ISO string format
     notes: Optional[str] = None
     created_by_user_id: Optional[str] = None
 
@@ -33,6 +35,7 @@ class UpdateIRStatusRequest(BaseModel):
 class CloseIRRequest(BaseModel):
     """Request model for closing an IR"""
     resolution_notes: Optional[str] = None
+    closed_at: Optional[str] = None  # NEW: ISO string format for closure date
     closed_by_user_id: Optional[str] = None
 
 # ==================== ROUTES ====================
@@ -44,39 +47,34 @@ async def open_ir(
     request: Request
 ):
     try:
-        # Extract company_id and user_id from the ticket first
-        from core.database import SessionLocal, Ticket
-        from uuid import UUID
-        db = SessionLocal()
-        ticket = db.query(Ticket).filter(Ticket.id == UUID(ticket_id)).first()
-        if not ticket:
-            db.close()
-            raise NotFoundError("Ticket not found")
+        # Parse dates if provided
+        ir_raised_at = None
+        if request_data.ir_raised_at:
+            ir_raised_at = datetime.fromisoformat(request_data.ir_raised_at.replace("Z", "+00:00"))
         
-        # Get user_id from request or use ticket's raised_by_user_id
-        user_id = request_data.created_by_user_id
-        if not user_id:
-            user_id = str(ticket.raised_by_user_id)
-        
-        db.close()
+        closed_at = None
+        if request_data.closed_at:
+            closed_at = datetime.fromisoformat(request_data.closed_at.replace("Z", "+00:00"))
         
         result = IRService.open_ir(
             ticket_id=ticket_id,
             ir_number=request_data.ir_number,
-            vendor=request_data.vendor or "siemens",
+            vendor=request_data.vendor,
             expected_resolution_date=request_data.expected_resolution_date,
+            ir_raised_at=ir_raised_at,  # Make sure this is passed
             notes=request_data.notes,
-            created_by_user_id=user_id
+            closed_at=closed_at,
+            created_by_user_id=request_data.created_by_user_id
         )
         
-        # Create embedding for the IR
+        # Create embedding for IR
         try:
             EmbeddingManager.add_ir_embedding(
                 ticket_id=ticket_id,
-                ir_id=result.get("id"),
-                company_id=str(ticket.company_id),
-                ir_number=result.get("ir_number"),
-                vendor=result.get("vendor"),
+                ir_id=result["id"],
+                company_id=result["company_id"],
+                ir_number=result["ir_number"],
+                vendor=result["vendor"],
                 notes=request_data.notes
             )
         except Exception as e:
@@ -89,53 +87,6 @@ async def open_ir(
         logger.error(f"Error opening IR: {e}")
         raise HTTPException(status_code=500, detail="Failed to open IR")
 
-@router.put("/ir/{ir_id}/status")
-async def update_ir_status(
-    ir_id: str,
-    request_data: UpdateIRStatusRequest,
-    request: Request
-):
-    try:
-        # Get user_id from header or use the provided one
-        user_id = request_data.updated_by_user_id
-        
-        result = IRService.update_ir_status(
-            ir_id=ir_id,
-            status=request_data.status,
-            vendor_status=request_data.vendor_status,
-            vendor_notes=request_data.vendor_notes,
-            notes=request_data.notes,
-            updated_by_user_id=user_id
-        )
-        
-        # Update embedding when IR status changes
-        try:
-            from core.database import SessionLocal, IncidentReport
-            from uuid import UUID
-            db = SessionLocal()
-            ir = db.query(IncidentReport).filter(IncidentReport.id == UUID(ir_id)).first()
-            if ir:
-                EmbeddingManager.update_ir_embedding(
-                    ticket_id=str(ir.ticket_id),
-                    company_id=str(ir.ticket.company_id) if ir.ticket else None,
-                    ir_number=ir.ir_number,
-                    vendor=ir.vendor,
-                    status=request_data.status,
-                    notes=ir.notes,
-                    vendor_notes=request_data.vendor_notes,
-                    resolution_notes=request_data.notes if request_data.status in ["resolved", "closed"] else None
-                )
-            db.close()
-        except Exception as e:
-            logger.warning(f"Failed to update IR embedding: {e}")
-        
-        return result
-    except (ValidationError, NotFoundError) as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Error updating IR: {e}")
-        raise HTTPException(status_code=500, detail="Failed to update IR")
-
 @router.post("/ir/{ir_id}/close")
 async def close_ir(
     ir_id: str,
@@ -143,30 +94,35 @@ async def close_ir(
     request: Request
 ):
     try:
+        # Parse closure date if provided
+        resolved_at = None
+        if hasattr(request_data, 'closed_at') and request_data.closed_at:
+            try:
+                resolved_at = datetime.fromisoformat(request_data.closed_at.replace("Z", "+00:00"))
+            except:
+                pass
+        
         result = IRService.close_ir(
             ir_id=ir_id,
             resolution_notes=request_data.resolution_notes,
-            closed_by_user_id=request_data.closed_by_user_id
+            closed_by_user_id=request_data.closed_by_user_id,
+            resolved_at=resolved_at  # NEW: Pass the closure date
         )
         
-        # Update embedding when IR is closed
+        # Delete embeddings when IR is closed
         try:
             from core.database import SessionLocal, IncidentReport
             from uuid import UUID
             db = SessionLocal()
             ir = db.query(IncidentReport).filter(IncidentReport.id == UUID(ir_id)).first()
             if ir:
-                EmbeddingManager.update_ir_embedding(
+                EmbeddingManager.deprecate_ir_embeddings(
                     ticket_id=str(ir.ticket_id),
-                    company_id=str(ir.ticket.company_id) if ir.ticket else None,
-                    ir_number=ir.ir_number,
-                    vendor=ir.vendor,
-                    status="closed",
-                    resolution_notes=request_data.resolution_notes
+                    reason="ir_closed"
                 )
             db.close()
         except Exception as e:
-            logger.warning(f"Failed to update IR embedding on close: {e}")
+            logger.warning(f"Failed to deprecate IR embeddings on close: {e}")
         
         return result
     except (ValidationError, NotFoundError) as e:
@@ -174,6 +130,28 @@ async def close_ir(
     except Exception as e:
         logger.error(f"Error closing IR: {e}")
         raise HTTPException(status_code=500, detail="Failed to close IR")
+    
+@router.put("/ir/{ir_id}/status")
+async def update_ir_status(
+    ir_id: str,
+    request_data: UpdateIRStatusRequest,
+    request: Request
+):
+    try:
+        result = IRService.update_ir_status(
+            ir_id=ir_id,
+            status=request_data.status,
+            vendor_status=request_data.vendor_status,
+            vendor_notes=request_data.vendor_notes,
+            notes=request_data.notes,
+            updated_by_user_id=request_data.updated_by_user_id
+        )
+        return result
+    except (ValidationError, NotFoundError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error updating IR status: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update IR status")
 
 @router.get("/ir/{ir_id}")
 async def get_ir(ir_id: str):
@@ -200,3 +178,50 @@ async def get_open_irs():
     except Exception as e:
         logger.error(f"Error getting open IRs: {e}")
         raise HTTPException(status_code=500, detail="Failed to get open IRs")
+    
+@router.delete("/ir/{ir_id}")
+async def delete_ir(
+    ir_id: str,
+    request: Request
+):
+    """Delete an Incident Report and its embeddings"""
+    try:
+        from core.database import SessionLocal, IncidentReport
+        from uuid import UUID
+        
+        # Get IR details before deletion
+        db = SessionLocal()
+        ir = db.query(IncidentReport).filter(IncidentReport.id == UUID(ir_id)).first()
+        if not ir:
+            raise NotFoundError("Incident Report not found")
+        
+        ticket_id = str(ir.ticket_id)
+        ir_number = ir.ir_number
+        db.close()
+        
+        # Deprecate IR embeddings (delete from Qdrant, mark inactive in PostgreSQL)
+        try:
+            EmbeddingManager.deprecate_ir_embeddings(
+                ticket_id=ticket_id,
+                reason="ir_deleted"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to deprecate IR embeddings: {e}")
+        
+        # Delete the IR via service
+        result = IRService.delete_ir(ir_id)
+        
+        return {
+            "success": True,
+            "message": f"Incident Report {ir_number} deleted successfully",
+            "ir_id": ir_id,
+            "ticket_id": ticket_id
+        }
+        
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except (ValidationError, NotFoundError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error deleting IR: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete IR")

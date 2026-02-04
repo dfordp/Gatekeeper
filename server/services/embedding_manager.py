@@ -135,12 +135,15 @@ class EmbeddingManager:
                     PointStruct(
                         id=point_id,
                         vector=vector,
-                        payload={
+                       payload={
                             "embedding_id": str(embedding_obj.id),
                             "ticket_id": ticket_id,
                             "company_id": company_id,
                             "source_type": source_type,
                             "text": text_content[:500],
+                            "is_active": embedding_obj.is_active,
+                            "attachment_id": str(embedding_obj.attachment_id) if embedding_obj.attachment_id else None,
+                            "rca_attachment_id": str(embedding_obj.rca_attachment_id) if embedding_obj.rca_attachment_id else None,
                         }
                     )
                 ]
@@ -157,6 +160,41 @@ class EmbeddingManager:
             logger.warning(f"Failed to sync embedding to Qdrant: {e}")
             return None
     
+    @staticmethod
+    def _delete_qdrant_embedding(
+        embedding_id: str,
+        vector_id: str
+    ) -> bool:
+        """
+        Delete an embedding from Qdrant.
+        
+        Physically removes the embedding from Qdrant instead of marking it inactive.
+        This saves storage space and prevents stale vectors from causing hallucinations.
+        
+        Args:
+            embedding_id: UUID of the embedding in PostgreSQL
+            vector_id: Point ID in Qdrant
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            client = EmbeddingManager._get_qdrant_client()
+            
+            # Delete the point from Qdrant
+            client.delete(
+                collection_name=EmbeddingManager.QDRANT_COLLECTION,
+                points_selector=[vector_id]
+            )
+            
+            logger.info(f"✓ Deleted Qdrant embedding {embedding_id} (point: {vector_id})")
+            return True
+            
+        except Exception as e:
+            logger.warning(f"Failed to delete Qdrant embedding {embedding_id}: {e}")
+            return False
+    
+
     @staticmethod
     def create_ticket_embeddings(
         ticket_id: str,
@@ -328,6 +366,20 @@ class EmbeddingManager:
             if deprecated_count > 0:
                 logger.info(f"Deprecated {deprecated_count} old RCA embeddings")
             
+            # Also update Qdrant for deprecated RCA embeddings
+            old_rcas = db.query(Embedding).filter(
+                Embedding.ticket_id == ticket_uuid,
+                Embedding.source_type == "rca",
+                Embedding.is_active == False
+            ).all()
+            
+            for old_rca in old_rcas:
+                if old_rca.vector_id:
+                    EmbeddingManager._delete_qdrant_embedding(
+                        embedding_id=str(old_rca.id),
+                        vector_id=old_rca.vector_id,
+                    )
+            
             # Build RCA text for embedding
             rca_text = root_cause_description
             if contributing_factors:
@@ -377,11 +429,18 @@ class EmbeddingManager:
         ticket_id: str,
         reason: Optional[str] = None
     ) -> bool:
-        """Deprecate all embeddings for a ticket"""
+        """Deprecate all embeddings for a ticket (mark inactive in PostgreSQL, delete from Qdrant)"""
         db = SessionLocal()
         try:
             ticket_uuid = UUID(ticket_id)
             
+            # Get all active embeddings for this ticket before deprecating
+            embeddings_to_deprecate = db.query(Embedding).filter(
+                Embedding.ticket_id == ticket_uuid,
+                Embedding.is_active == True
+            ).all()
+            
+            # Update PostgreSQL - mark as inactive
             deprecated_count = db.query(Embedding).filter(
                 Embedding.ticket_id == ticket_uuid,
                 Embedding.is_active == True
@@ -393,14 +452,385 @@ class EmbeddingManager:
             
             db.commit()
             
+            # Delete from Qdrant for each deprecated embedding
+            qdrant_deleted = 0
+            for embedding in embeddings_to_deprecate:
+                if embedding.vector_id:
+                    success = EmbeddingManager._delete_qdrant_embedding(
+                        embedding_id=str(embedding.id),
+                        vector_id=embedding.vector_id
+                    )
+                    if success:
+                        qdrant_deleted += 1
+            
             if deprecated_count > 0:
-                logger.info(f"✓ Deprecated {deprecated_count} embeddings for ticket {ticket_id}")
+                logger.info(f"✓ Deprecated {deprecated_count} embeddings for ticket {ticket_id} "
+                           f"({qdrant_deleted} deleted from Qdrant)")
             
             return True
             
         except Exception as e:
             db.rollback()
             logger.error(f"Failed to deprecate ticket embeddings: {e}")
+            return False
+        finally:
+            db.close()
+    
+    @staticmethod
+    def add_ir_embedding(
+        ticket_id: str,
+        ir_id: str,
+        company_id: str,
+        ir_number: str,
+        vendor: str,
+        notes: Optional[str] = None
+    ) -> bool:
+        """
+        Create embedding for Incident Report when opened.
+        Stores in PostgreSQL and syncs to Qdrant immediately.
+        """
+        db = SessionLocal()
+        try:
+            ticket_uuid = UUID(ticket_id)
+            company_uuid = UUID(company_id)
+            
+            logger.info(f"Creating IR embedding for IR {ir_number}")
+            
+            # Build IR text for embedding
+            ir_text = f"Incident Report {ir_number} - {vendor}"
+            if notes:
+                ir_text += f"\n{notes}"
+            
+            vector = EmbeddingManager._api_client.get_embedding_vector(ir_text)
+            if not vector:
+                logger.warning(f"Failed to generate vector for IR")
+                return False
+            
+            emb = Embedding(
+                company_id=company_uuid,
+                ticket_id=ticket_uuid,
+                source_type="ir",
+                text_content=ir_text[:2000],
+                is_active=True
+            )
+            db.add(emb)
+            db.flush()
+            
+            # Sync to Qdrant and set vector_id
+            point_id = EmbeddingManager._sync_embedding_to_qdrant(
+                db=db,
+                embedding_obj=emb,
+                ticket_id=ticket_id,
+                company_id=company_id,
+                source_type="ir",
+                text_content=ir_text
+            )
+            
+            db.commit()
+            logger.info(f"✓ Created IR embedding for {ir_number}")
+            return True
+                    
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Failed to add IR embedding: {e}")
+            return False
+        finally:
+            db.close()
+
+    @staticmethod
+    def update_ir_embedding(
+        ticket_id: str,
+        company_id: str,
+        ir_number: str,
+        vendor: str,
+        status: Optional[str] = None,
+        notes: Optional[str] = None,
+        vendor_notes: Optional[str] = None,
+        resolution_notes: Optional[str] = None
+    ) -> bool:
+        """
+        Update IR embedding when status changes or notes are updated.
+        Deprecates old embedding and creates new one.
+        """
+        db = SessionLocal()
+        try:
+            ticket_uuid = UUID(ticket_id)
+            company_uuid = UUID(company_id)
+            
+            logger.info(f"Updating IR embedding for {ir_number}")
+            
+            # Get old IR embeddings before deprecating
+            old_embeddings = db.query(Embedding).filter(
+                Embedding.ticket_id == ticket_uuid,
+                Embedding.source_type == "ir",
+                Embedding.is_active == True
+            ).all()
+            
+            # Deprecate old IR embedding if it exists
+            deprecated_count = db.query(Embedding).filter(
+                Embedding.ticket_id == ticket_uuid,
+                Embedding.source_type == "ir",
+                Embedding.is_active == True
+            ).update({
+                Embedding.is_active: False,
+                Embedding.deprecated_at: datetime.utcnow(),
+                Embedding.deprecation_reason: "ir_updated"
+            }, synchronize_session=False)
+            
+            if deprecated_count > 0:
+                logger.info(f"Deprecated {deprecated_count} old IR embeddings")
+                
+                # Delete from Qdrant
+                for old_emb in old_embeddings:
+                    if old_emb.vector_id:
+                        EmbeddingManager._delete_qdrant_embedding(
+                            embedding_id=str(old_emb.id),
+                            vector_id=old_emb.vector_id
+                        )
+            
+            # Build updated IR text for embedding
+            ir_text = f"Incident Report {ir_number} - {vendor}"
+            if status:
+                ir_text += f"\nStatus: {status}"
+            if notes:
+                ir_text += f"\n{notes}"
+            if vendor_notes:
+                ir_text += f"\nVendor: {vendor_notes}"
+            if resolution_notes:
+                ir_text += f"\nResolution: {resolution_notes}"
+            
+            vector = EmbeddingManager._api_client.get_embedding_vector(ir_text)
+            if not vector:
+                logger.warning(f"Failed to generate vector for IR update")
+                return False
+            
+            # Create new embedding
+            emb = Embedding(
+                company_id=company_uuid,
+                ticket_id=ticket_uuid,
+                source_type="ir",
+                text_content=ir_text[:2000],
+                is_active=True
+            )
+            db.add(emb)
+            db.flush()
+            
+            # Sync to Qdrant
+            point_id = EmbeddingManager._sync_embedding_to_qdrant(
+                db=db,
+                embedding_obj=emb,
+                ticket_id=ticket_id,
+                company_id=company_id,
+                source_type="ir",
+                text_content=ir_text
+            )
+            
+            db.commit()
+            logger.info(f"✓ Updated IR embedding for {ir_number}")
+            return True
+                    
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Failed to update IR embedding: {e}")
+            return False
+        finally:
+            db.close()
+
+    @staticmethod
+    def deprecate_ir_embeddings(
+        ticket_id: str,
+        reason: Optional[str] = None
+    ) -> bool:
+        """Deprecate all IR embeddings for a ticket (mark inactive in PostgreSQL, delete from Qdrant)"""
+        db = SessionLocal()
+        try:
+            ticket_uuid = UUID(ticket_id)
+            
+            # Get all active IR embeddings for this ticket
+            embeddings_to_deprecate = db.query(Embedding).filter(
+                Embedding.ticket_id == ticket_uuid,
+                Embedding.source_type == "ir",
+                Embedding.is_active == True
+            ).all()
+            
+            # Update PostgreSQL - mark as inactive
+            deprecated_count = db.query(Embedding).filter(
+                Embedding.ticket_id == ticket_uuid,
+                Embedding.source_type == "ir",
+                Embedding.is_active == True
+            ).update({
+                Embedding.is_active: False,
+                Embedding.deprecated_at: datetime.utcnow(),
+                Embedding.deprecation_reason: reason or "ir_deleted"
+            }, synchronize_session=False)
+            
+            db.commit()
+            
+            # Delete from Qdrant for each embedding
+            qdrant_deleted = 0
+            for embedding in embeddings_to_deprecate:
+                if embedding.vector_id:
+                    success = EmbeddingManager._delete_qdrant_embedding(
+                        embedding_id=str(embedding.id),
+                        vector_id=embedding.vector_id
+                    )
+                    if success:
+                        qdrant_deleted += 1
+            
+            if deprecated_count > 0:
+                logger.info(f"✓ Deprecated {deprecated_count} IR embeddings ({qdrant_deleted} deleted from Qdrant)")
+            
+            return True
+            
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Failed to deprecate IR embeddings: {e}")
+            return False
+        finally:
+            db.close()
+    
+    @staticmethod
+    def add_resolution_embedding(
+        ticket_id: str,
+        company_id: str,
+        solution_description: str,
+        steps_taken: Optional[List[str]] = None,
+        resources_used: Optional[List[str]] = None,
+        follow_up_notes: Optional[str] = None
+    ) -> bool:
+        """
+        Create embedding for Resolution Note.
+        Stores in PostgreSQL and syncs to Qdrant immediately.
+        """
+        db = SessionLocal()
+        try:
+            ticket_uuid = UUID(ticket_id)
+            company_uuid = UUID(company_id)
+            
+            logger.info(f"Creating resolution embedding for ticket {ticket_id}")
+            
+            # Deprecate old resolution embedding if it exists
+            deprecated_count = db.query(Embedding).filter(
+                Embedding.ticket_id == ticket_uuid,
+                Embedding.source_type == "resolution",
+                Embedding.is_active == True
+            ).update({
+                Embedding.is_active: False,
+                Embedding.deprecated_at: datetime.utcnow(),
+                Embedding.deprecation_reason: "resolution_updated"
+            }, synchronize_session=False)
+            
+            if deprecated_count > 0:
+                logger.info(f"Deprecated {deprecated_count} old resolution embeddings")
+                
+                # Also update Qdrant for deprecated embeddings
+                old_embeddings = db.query(Embedding).filter(
+                    Embedding.ticket_id == ticket_uuid,
+                    Embedding.source_type == "resolution",
+                    Embedding.is_active == False
+                ).all()
+                
+                for old_emb in old_embeddings:
+                    if old_emb.vector_id:
+                        EmbeddingManager._delete_qdrant_embedding(
+                            embedding_id=str(old_emb.id),
+                            vector_id=old_emb.vector_id,
+                        )
+            
+            # Build resolution text for embedding
+            resolution_text = solution_description
+            if steps_taken:
+                resolution_text += "\nSteps: " + " | ".join(steps_taken)
+            if resources_used:
+                resolution_text += "\nResources: " + ", ".join(resources_used)
+            if follow_up_notes:
+                resolution_text += "\n" + follow_up_notes
+            
+            vector = EmbeddingManager._api_client.get_embedding_vector(resolution_text)
+            if not vector:
+                logger.warning(f"Failed to generate vector for resolution")
+                return False
+            
+            emb = Embedding(
+                company_id=company_uuid,
+                ticket_id=ticket_uuid,
+                source_type="resolution",
+                text_content=resolution_text[:2000],
+                is_active=True
+            )
+            db.add(emb)
+            db.flush()
+            
+            # Sync to Qdrant and set vector_id
+            point_id = EmbeddingManager._sync_embedding_to_qdrant(
+                db=db,
+                embedding_obj=emb,
+                ticket_id=ticket_id,
+                company_id=company_id,
+                source_type="resolution",
+                text_content=resolution_text
+            )
+            
+            db.commit()
+            logger.info(f"✓ Created resolution embedding for ticket {ticket_id}")
+            return True
+                    
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Failed to add resolution embedding: {e}")
+            return False
+        finally:
+            db.close()
+
+    @staticmethod
+    def deprecate_resolution_embeddings(
+        ticket_id: str,
+        reason: Optional[str] = None
+    ) -> bool:
+        """Deprecate all resolution embeddings for a ticket (mark inactive in PostgreSQL, delete from Qdrant)"""
+        db = SessionLocal()
+        try:
+            ticket_uuid = UUID(ticket_id)
+            
+            # Get all active resolution embeddings for this ticket
+            embeddings_to_deprecate = db.query(Embedding).filter(
+                Embedding.ticket_id == ticket_uuid,
+                Embedding.source_type == "resolution",
+                Embedding.is_active == True
+            ).all()
+            
+            # Update PostgreSQL - mark as inactive
+            deprecated_count = db.query(Embedding).filter(
+                Embedding.ticket_id == ticket_uuid,
+                Embedding.source_type == "resolution",
+                Embedding.is_active == True
+            ).update({
+                Embedding.is_active: False,
+                Embedding.deprecated_at: datetime.utcnow(),
+                Embedding.deprecation_reason: reason or "resolution_deleted"
+            }, synchronize_session=False)
+            
+            db.commit()
+            
+            # Delete from Qdrant for each embedding
+            qdrant_deleted = 0
+            for embedding in embeddings_to_deprecate:
+                if embedding.vector_id:
+                    success = EmbeddingManager._delete_qdrant_embedding(
+                        embedding_id=str(embedding.id),
+                        vector_id=embedding.vector_id
+                    )
+                    if success:
+                        qdrant_deleted += 1
+            
+            if deprecated_count > 0:
+                logger.info(f"✓ Deprecated {deprecated_count} resolution embeddings ({qdrant_deleted} deleted from Qdrant)")
+            
+            return True
+            
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Failed to deprecate resolution embeddings: {e}")
             return False
         finally:
             db.close()

@@ -30,7 +30,7 @@ TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}" if TELEGRAM_B
 
 # Groq AI
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant-on_demand")
+MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
 
 # OpenAI

@@ -84,7 +84,8 @@ class UpdateTicketRequest(BaseModel):
     detailed_description: Optional[str] = Field(None, min_length=10, description="Full description")
     category: Optional[str] = Field(None, description="Ticket category")
     level: Optional[str] = Field(None, description="Priority level (level-1, level-2, level-3)")
-    created_at: Optional[str] = Field(None, description="ISO format creation date")  # ADD THIS
+    created_at: Optional[str] = Field(None, description="ISO format creation date")
+    closed_at: Optional[str] = Field(None, description="ISO format closure date") 
 
 
 # ==================== ENDPOINTS ====================
@@ -478,7 +479,7 @@ async def delete_ticket(
 
 
 @router.put("/{ticket_id}")
-@invalidate_on_mutation(tags=["ticket:detail", "ticket:list", "analytics"])  # Add analytics to invalidation
+@invalidate_on_mutation(tags=["ticket:detail", "ticket:list", "analytics"])
 async def update_ticket(
     ticket_id: str,
     request: UpdateTicketRequest,
@@ -486,12 +487,17 @@ async def update_ticket(
 ):
     """Update ticket details"""
     try:
-        # Parse created_at if provided
-        update_data = request.dict(exclude_unset=True)
+        # Parse dates if provided
         created_at = None
-        if "created_at" in update_data and update_data["created_at"]:
+        if request.created_at:
             created_at = datetime.fromisoformat(
-                update_data["created_at"].replace('Z', '+00:00')
+                request.created_at.replace('Z', '+00:00')
+            )
+        
+        closed_at = None
+        if request.closed_at:
+            closed_at = datetime.fromisoformat(
+                request.closed_at.replace('Z', '+00:00')
             )
         
         result = TicketCreationService.update_ticket(
@@ -501,7 +507,8 @@ async def update_ticket(
             detailed_description=request.detailed_description,
             category=request.category,
             level=request.level,
-            created_at=created_at,  # ADD THIS LINE
+            created_at=created_at,
+            closed_at=closed_at, 
             admin_id=admin_payload.get("id"),
         )
         return result

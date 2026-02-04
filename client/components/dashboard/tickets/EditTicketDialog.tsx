@@ -43,7 +43,8 @@ interface EditTicketDialogProps {
     detailed_description: string
     category?: string
     level?: string
-    created_at?: string  // ADD THIS
+    created_at?: string
+    closed_at?:string
   }) => Promise<void>
   fetchTicket?: () => Promise<void>
   isLoading: boolean
@@ -281,7 +282,8 @@ export default function EditTicketDialog({
           detailed_description: description.trim(),
           category: category || undefined,
           level: level || undefined,
-          created_at: new Date(createdAt).toISOString(),  // ADD THIS LINE
+          created_at: new Date(createdAt).toISOString(),  
+          closed_at : new Date(closedAt).toISOString(),
         })
 
       // Upload ticket attachments
@@ -492,8 +494,77 @@ export default function EditTicketDialog({
               </div>
             </TabsContent>
 
-            {/* Attachments Tab */}
+          {/* Attachments Tab */}
             <TabsContent value="attachments" className="space-y-4 py-4">
+              {/* New Attachments Section */}
+              <div className="space-y-2 p-3 bg-purple-50 rounded border border-purple-200">
+                <Label className="font-semibold flex items-center gap-2 text-purple-900">
+                  <FileUp className="h-4 w-4" />
+                  Add New Attachments
+                </Label>
+                <p className="text-xs text-purple-800">
+                  Upload additional files to this ticket
+                </p>
+                <div className="space-y-3 mt-2">
+                  {/* New attachments to upload */}
+                  {newAttachments.length > 0 && (
+                    <div className="space-y-2">
+                      <p className="text-xs font-medium text-purple-900">Files to Upload:</p>
+                      {newAttachments.map((att) => (
+                        <div
+                          key={att.id}
+                          className="flex items-center justify-between p-2 bg-white rounded border"
+                        >
+                          <span className="text-sm text-gray-700">{att.name}</span>
+                          <button
+                            type="button"
+                            onClick={() => setNewAttachments((prev) => prev.filter((a) => a.id !== att.id))}
+                            className="text-red-500 hover:text-red-700"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+            
+                  {/* Add new files button */}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isLoading}
+                    className="gap-2"
+                  >
+                    <Plus className="h-4 w-4" />
+                    Add File
+                  </Button>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    onChange={(e) => {
+                      const files = e.currentTarget.files
+                      if (!files) return
+            
+                      for (let i = 0; i < files.length; i++) {
+                        const file = files[i]
+                        const id = Math.random().toString(36).substring(2, 11)
+                        setNewAttachments((prev) => [...prev, { id, name: file.name, file }])
+                      }
+            
+                      if (fileInputRef.current) {
+                        fileInputRef.current.value = ""
+                      }
+                    }}
+                    className="hidden"
+                    disabled={isLoading}
+                  />
+                </div>
+              </div>
+            
+              {/* Existing Attachments Section */}
               <div>
                 <h3 className="font-semibold mb-3 flex items-center gap-2">
                   <FileUp className="h-4 w-4" />

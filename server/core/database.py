@@ -448,6 +448,7 @@ class AdminAuditLog(Base):
     
     def __repr__(self):
         return f"<AdminAuditLog {self.action}>"
+
     
     @staticmethod
     def create(admin_user_id, action: str, resource: str = None, resource_id: str = None,
@@ -476,6 +477,60 @@ class AdminAuditLog(Base):
         finally:
             db.close()
 
+class ChatSession(Base):
+    """Chat session model - tracks conversation state for Telegram users"""
+    __tablename__ = "chat_session"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=False, index=True)
+    company_id = Column(UUID(as_uuid=True), ForeignKey("company.id"), nullable=False, index=True)
+    telegram_chat_id = Column(String(100), nullable=True, unique=True, index=True)  # Now nullable - can be None initially
+    session_state = Column(JSONB, nullable=True, default={})
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    last_message_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    closed_at = Column(DateTime, nullable=True)
+    
+    user = relationship("User", foreign_keys=[user_id])
+    company = relationship("Company", foreign_keys=[company_id])
+    attachments = relationship("ChatAttachment", back_populates="chat_session", cascade="all, delete-orphan")
+    
+    __table_args__ = (
+        Index("idx_chat_session_user", "user_id"),
+        Index("idx_chat_session_company", "company_id"),
+        Index("idx_chat_session_telegram_id", "telegram_chat_id"),
+        Index("idx_chat_session_active", "is_active"),
+        Index("idx_chat_session_created_at", "created_at"),
+    )
+    
+    def __repr__(self):
+        return f"<ChatSession {self.id}>"
+
+
+class ChatAttachment(Base):
+    """Chat attachment model - temporary attachments before confirmation"""
+    __tablename__ = "chat_attachment"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    chat_session_id = Column(UUID(as_uuid=True), ForeignKey("chat_session.id"), nullable=False, index=True)
+    local_file_path = Column(String(1000), nullable=False)
+    file_name = Column(String(255), nullable=False)
+    mime_type = Column(String(100), nullable=True)
+    cloudinary_url = Column(String(1000), nullable=True)  # Set when uploaded to Cloudinary
+    file_size = Column(Integer, nullable=True)  # Size in bytes
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    uploaded_at = Column(DateTime, nullable=True)  # When moved to Cloudinary
+    expires_at = Column(DateTime, nullable=False)  # Auto-delete if not confirmed
+    
+    chat_session = relationship("ChatSession", back_populates="attachments")
+    
+    __table_args__ = (
+        Index("idx_chat_attachment_session", "chat_session_id"),
+        Index("idx_chat_attachment_expires_at", "expires_at"),
+    )
+    
+    def __repr__(self):
+        return f"<ChatAttachment {self.file_name}>"
 
 def get_db() -> Session:
     """Dependency injection for FastAPI"""

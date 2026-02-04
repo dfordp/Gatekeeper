@@ -15,92 +15,65 @@ class IRService:
     """Service for managing Incident Reports"""
     
     @staticmethod
-    def open_ir(
-        ticket_id: str,
-        ir_number: str,
-        vendor: str = "siemens",
-        expected_resolution_date: Optional[datetime] = None,
-        notes: Optional[str] = None,
-        created_by_user_id: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """Open an Incident Report for a ticket"""
+    def delete_ir(ir_id: str) -> Dict[str, Any]:
+        """Delete an Incident Report and its related records"""
         db = SessionLocal()
         try:
-            ticket_uuid = UUID(ticket_id)
+            ir_uuid = UUID(ir_id)
             
-            # Verify ticket exists
-            ticket = db.query(Ticket).filter(Ticket.id == ticket_uuid).first()
-            if not ticket:
-                raise NotFoundError("Ticket not found")
+            # Verify IR exists
+            ir = db.query(IncidentReport).filter(IncidentReport.id == ir_uuid).first()
+            if not ir:
+                raise NotFoundError("Incident Report not found")
             
-            # Check if IR already exists
-            existing_ir = db.query(IncidentReport).filter(
-                IncidentReport.ir_number == ir_number
-            ).first()
-            if existing_ir:
-                raise ValidationError(f"IR {ir_number} already exists")
+            ir_number = ir.ir_number
+            ticket_id = ir.ticket_id
             
-            # Create IR
-            ir = IncidentReport(
-                ticket_id=ticket_uuid,
-                ir_number=ir_number.strip(),
-                vendor=vendor.lower(),
-                expected_resolution_date=expected_resolution_date,
-                notes=notes,
-                created_by_user_id=UUID(created_by_user_id) if created_by_user_id else ticket.raised_by_user_id
-            )
-            db.add(ir)
-            db.flush()
+            # Get ticket to update has_ir flag
+            ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
             
-            # Update ticket to mark it has IR
-            ticket.has_ir = True
-            ticket.ir_number = ir_number.strip()
-            ticket.ir_raised_at = datetime.utcnow()
-            ticket.ir_expected_resolution_date = expected_resolution_date
-            ticket.ir_notes = notes
-            db.flush()
+            # Delete related IR events first (due to FK constraint)
+            db.query(IREvent).filter(IREvent.incident_report_id == ir_uuid).delete(synchronize_session=False)
             
-            # Log IR event
-            ir_event = IREvent(
-                incident_report_id=ir.id,
-                event_type="ir_opened",
-                actor_user_id=UUID(created_by_user_id) if created_by_user_id else ticket.raised_by_user_id,
-                new_status="open",
-                notes=f"IR opened for ticket {ticket.ticket_no}",
-                payload={
-                    "ir_number": ir_number,
-                    "vendor": vendor,
-                    "expected_resolution_date": expected_resolution_date.isoformat() if expected_resolution_date else None
-                }
-            )
-            db.add(ir_event)
+            # Delete the IR
+            db.delete(ir)
+            
+            # Update ticket: remove IR tracking if this was the only IR
+            if ticket:
+                # Check if there are other IRs for this ticket
+                other_irs = db.query(IncidentReport).filter(
+                    IncidentReport.ticket_id == ticket_id,
+                    IncidentReport.id != ir_uuid
+                ).count()
+                
+                if other_irs == 0:
+                    # No other IRs, so mark ticket as having no open IR
+                    ticket.has_ir = False
+                    ticket.ir_number = None
+                    ticket.ir_raised_at = None
+                    ticket.ir_closed_at = None
+            
             db.commit()
             
-            logger.info(f"✓ IR opened: {ir_number} for ticket {ticket.ticket_no}")
+            logger.info(f"✓ IR deleted: {ir_number}")
             
             return {
-                "id": str(ir.id),
-                "ir_number": ir.ir_number,
-                "ticket_id": ticket_id,
-                "ticket_no": ticket.ticket_no,
-                "company_id": str(ticket.company_id),
-                "vendor": ir.vendor,
-                "status": ir.status,
-                "expected_resolution_date": ir.expected_resolution_date.isoformat() if ir.expected_resolution_date else None,
-                "created_at": ir.created_at.isoformat()
+                "id": ir_id,
+                "ir_number": ir_number,
+                "ticket_id": str(ticket_id),
+                "message": f"IR {ir_number} deleted successfully"
             }
             
-        except (ValidationError, NotFoundError):
+        except NotFoundError:
             db.rollback()
             raise
         except Exception as e:
             db.rollback()
-            logger.error(f"Failed to open IR: {e}")
-            raise ValidationError(f"Failed to open IR: {str(e)}")
+            logger.error(f"Failed to delete IR: {e}")
+            raise ValidationError(f"Failed to delete IR: {str(e)}")
         finally:
             db.close()
-    
-    
+
     @staticmethod
     def update_ir_status(
         ir_id: str,
@@ -189,53 +162,62 @@ class IRService:
     def close_ir(
         ir_id: str,
         resolution_notes: Optional[str] = None,
-        closed_by_user_id: Optional[str] = None
+        closed_by_user_id: Optional[str] = None,
+        resolved_at: Optional[datetime] = None  # NEW: Accept closure date
     ) -> Dict[str, Any]:
         """Close an Incident Report"""
-        return IRService.update_ir_status(
-            ir_id=ir_id,
-            status="closed",
-            notes=resolution_notes,
-            updated_by_user_id=closed_by_user_id
-        )
-    
-    
-    @staticmethod
-    def get_ir(ir_id: str) -> Dict[str, Any]:
-        """Get IR details"""
         db = SessionLocal()
         try:
-            ir = db.query(IncidentReport).filter(
-                IncidentReport.id == UUID(ir_id)
-            ).first()
+            ir_uuid = UUID(ir_id)
             
+            # Verify IR exists
+            ir = db.query(IncidentReport).filter(IncidentReport.id == ir_uuid).first()
             if not ir:
                 raise NotFoundError("Incident Report not found")
             
             # Get ticket for company_id
             ticket = db.query(Ticket).filter(Ticket.id == ir.ticket_id).first()
-            company_id = str(ticket.company_id) if ticket else None
+            if not ticket:
+                raise NotFoundError("Associated ticket not found")
+            
+            ir.status = "closed"
+            ir.notes = resolution_notes or ir.notes
+            ir.resolved_at = resolved_at if resolved_at else datetime.utcnow()  # Use provided date or current time
+            ir.updated_by_user_id = UUID(closed_by_user_id) if closed_by_user_id else ir.created_by_user_id
+            ticket.ir_closed_at = ir.resolved_at  # Set ticket closure date to match IR
+            db.flush()
+            
+            # Log IR event
+            ir_event = IREvent(
+                incident_report_id=ir.id,
+                event_type="closed",
+                actor_user_id=UUID(closed_by_user_id) if closed_by_user_id else ir.created_by_user_id,
+                old_status=ir.status,
+                new_status="closed",
+                notes=resolution_notes,
+                payload={
+                    "resolved_at": ir.resolved_at.isoformat()
+                }
+            )
+            db.add(ir_event)
+            db.commit()
+            
+            logger.info(f"✓ IR {ir.ir_number} closed")
             
             return {
                 "id": str(ir.id),
                 "ir_number": ir.ir_number,
-                "ticket_id": str(ir.ticket_id),
-                "company_id": company_id,
-                "vendor": ir.vendor,
                 "status": ir.status,
-                "expected_resolution_date": ir.expected_resolution_date.isoformat() if ir.expected_resolution_date else None,
                 "resolved_at": ir.resolved_at.isoformat() if ir.resolved_at else None,
-                "notes": ir.notes,
-                "vendor_status": ir.vendor_status,
-                "vendor_notes": ir.vendor_notes,
-                "last_vendor_update": ir.last_vendor_update.isoformat() if ir.last_vendor_update else None,
-                "created_at": ir.created_at.isoformat(),
-                "updated_at": ir.updated_at.isoformat()
             }
             
-        except Exception as e:
-            logger.error(f"Failed to get IR: {e}")
+        except (ValidationError, NotFoundError):
+            db.rollback()
             raise
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Failed to close IR: {e}")
+            raise ValidationError(f"Failed to close IR: {str(e)}")
         finally:
             db.close()
     
@@ -275,36 +257,101 @@ class IRService:
     
     
     @staticmethod
-    def get_open_irs() -> List[Dict[str, Any]]:
-        """Get all open IRs across system"""
+    def open_ir(
+        ticket_id: str,
+        ir_number: str,
+        vendor: str = "siemens",
+        expected_resolution_date: Optional[datetime] = None,
+        ir_raised_at: Optional[datetime] = None,  # NEW: Accept ir_raised_at parameter
+        notes: Optional[str] = None,
+        closed_at: Optional[datetime] = None,
+        created_by_user_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Open an Incident Report for a ticket (may already be closed if importing legacy data)"""
         db = SessionLocal()
         try:
-            irs = db.query(IncidentReport).filter(
-                IncidentReport.status == "open"
-            ).order_by(IncidentReport.raised_at.asc()).all()
+            ticket_uuid = UUID(ticket_id)
             
-            results = []
-            for ir in irs:
-                # Get ticket for company_id
-                ticket = db.query(Ticket).filter(Ticket.id == ir.ticket_id).first()
-                company_id = str(ticket.company_id) if ticket else None
-                
-                results.append({
-                    "id": str(ir.id),
-                    "ir_number": ir.ir_number,
-                    "ticket_id": str(ir.ticket_id),
-                    "vendor": ir.vendor,
-                    "status": ir.status,
-                    "company_id": company_id,
-                    "raised_at": ir.raised_at.isoformat(),
-                    "expected_resolution_date": ir.expected_resolution_date.isoformat() if ir.expected_resolution_date else None,
-                    "days_open": (datetime.utcnow() - ir.raised_at).days
-                })
+            # Verify ticket exists
+            ticket = db.query(Ticket).filter(Ticket.id == ticket_uuid).first()
+            if not ticket:
+                raise NotFoundError("Ticket not found")
             
-            return results
+            # Check if IR already exists FOR THIS TICKET (not globally)
+            existing_ir = db.query(IncidentReport).filter(
+                IncidentReport.ticket_id == ticket_uuid,
+                IncidentReport.ir_number == ir_number
+            ).first()
+            if existing_ir:
+                raise ValidationError(f"IR {ir_number} already exists for this ticket")
             
+            # Determine if IR will be open or closed
+            ir_status = "closed" if closed_at else "open"
+            
+            # Create IR
+            ir = IncidentReport(
+                ticket_id=ticket_uuid,
+                ir_number=ir_number.strip(),
+                vendor=vendor.lower(),
+                expected_resolution_date=expected_resolution_date,
+                notes=notes,
+                created_by_user_id=UUID(created_by_user_id) if created_by_user_id else ticket.raised_by_user_id,
+                status=ir_status,
+                resolved_at=closed_at  # Set closure date if provided
+            )
+            
+            db.add(ir)
+            db.flush()
+            
+            ticket.has_ir = True  # Mark ticket as having an IR (open or closed)
+            ticket.ir_number = ir_number.strip()
+            # Use the passed ir_raised_at if provided, otherwise use current time
+            ticket.ir_raised_at = ir_raised_at if ir_raised_at else datetime.utcnow()
+            ticket.ir_expected_resolution_date = expected_resolution_date
+            ticket.ir_notes = notes
+            ticket.ir_closed_at = closed_at  # Track when IR was closed on ticket
+            db.flush()
+            
+            # Log IR event
+            ir_event = IREvent(
+                incident_report_id=ir.id,
+                event_type="ir_opened",
+                actor_user_id=UUID(created_by_user_id) if created_by_user_id else ticket.raised_by_user_id,
+                new_status=ir_status,
+                notes=f"IR opened for ticket {ticket.ticket_no}" + (f" (already closed at {closed_at.isoformat()})" if closed_at else ""),
+                payload={
+                    "ir_number": ir_number,
+                    "vendor": vendor,
+                    "expected_resolution_date": expected_resolution_date.isoformat() if expected_resolution_date else None,
+                    "ir_raised_at": ir_raised_at.isoformat() if ir_raised_at else None,
+                    "resolved_at": closed_at.isoformat() if closed_at else None
+                }
+            )
+            db.add(ir_event)
+            db.commit()
+            
+            status_note = f" (already closed at {closed_at.isoformat()})" if closed_at else ""
+            logger.info(f"✓ IR opened: {ir_number} for ticket {ticket.ticket_no}{status_note}")
+            
+            return {
+                "id": str(ir.id),
+                "ir_number": ir.ir_number,
+                "ticket_id": ticket_id,
+                "ticket_no": ticket.ticket_no,
+                "company_id": str(ticket.company_id),
+                "vendor": ir.vendor,
+                "status": ir.status,
+                "expected_resolution_date": ir.expected_resolution_date.isoformat() if ir.expected_resolution_date else None,
+                "resolved_at": ir.resolved_at.isoformat() if ir.resolved_at else None,
+                "created_at": ir.created_at.isoformat()
+            }
+            
+        except (ValidationError, NotFoundError):
+            db.rollback()
+            raise
         except Exception as e:
-            logger.error(f"Failed to get open IRs: {e}")
-            return []
+            db.rollback()
+            logger.error(f"Failed to open IR: {e}")
+            raise ValidationError(f"Failed to open IR: {str(e)}")
         finally:
             db.close()

@@ -49,9 +49,6 @@ logger = logging.getLogger(__name__)
 class SearchService:
     """Service for searching similar solutions and deduplicating support requests."""
     
-    # Default confidence thresholds
-    DEFAULT_THRESHOLD = 0.75
-    
     @staticmethod
     def search_similar_solutions(
         query_text: str,

@@ -82,6 +82,11 @@ class RCAService:
                 existing_rca.prevention_measures = prevention_measures.strip() if prevention_measures else None
                 existing_rca.resolution_steps = resolution_steps or []
                 existing_rca.updated_at = datetime.utcnow()
+
+                AttachmentProcessor.deprecate_rca_attachments(
+                    rca_id=str(existing_rca.id),
+                    reason="rca_updated"
+                )
                 
                 # Clear old attachments and add new ones
                 db.query(RCAAttachment).filter(RCAAttachment.rca_id == existing_rca.id).delete()
@@ -120,7 +125,7 @@ class RCAService:
             rca_text = f"{root_cause_description}\n\n{prevention_measures or ''}\n\n{' '.join(resolution_steps or [])}"
             
             try:
-                EmbeddingManager.create_rca_embedding(
+                AttachmentProcessor._create_rca_embeddings(
                     db=db,
                     ticket_id=ticket_uuid,
                     company_id=ticket.company_id,

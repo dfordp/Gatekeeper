@@ -48,6 +48,7 @@ from routes.search_routes import router as search_router
 from routes.rca_routes import router as rca_router
 from routes.cache_routes import router as cache_router
 from routes.ir_routes import router as ir_router
+from routes.chat_routes import router as chat_router
 
 # Legacy session management (keeping for bot compatibility)
 from session import (
@@ -134,6 +135,7 @@ app.include_router(search_router)
 app.include_router(rca_router)
 app.include_router(cache_router)
 app.include_router(ir_router)
+app.include_router(chat_router)
 
 # Legacy HTTP routes (existing bot)
 app.include_router(http_router)

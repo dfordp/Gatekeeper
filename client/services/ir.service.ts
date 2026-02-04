@@ -29,6 +29,8 @@ export const irService = {
       ir_number: string
       vendor?: string
       expected_resolution_date?: string
+      ir_raised_at?: string
+      closed_at?: string
       notes?: string
       created_by_user_id?: string
     }
@@ -56,6 +58,28 @@ export const irService = {
       data
     )
     return response.data as IncidentReport
+  },
+
+  // Close an IR
+  async closeIR(
+    irId: string,
+    data?: {
+      resolution_notes?: string
+      closed_at?: string
+      closed_by_user_id?: string
+    }
+  ): Promise<IncidentReport> {
+    const response = await apiClient.post(
+      `/api/ir/${irId}/close`,
+      data || {}
+    )
+    return response.data as IncidentReport
+  },
+
+  // Delete an IR
+  async deleteIR(irId: string): Promise<{ success: boolean; message: string }> {
+    const response = await apiClient.delete(`/api/ir/${irId}`)
+    return response.data as { success: boolean; message: string }
   },
 
   // Get IR details

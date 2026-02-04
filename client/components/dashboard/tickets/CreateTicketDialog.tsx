@@ -128,6 +128,7 @@ export default function CreateTicketDialog({
   const [irRaisedAt, setIrRaisedAt] = useState<string>("")
   const [irExpectedResolutionDate, setIrExpectedResolutionDate] = useState<string>("")
   const [irNotes, setIrNotes] = useState<string>("")
+  const [irClosedAt, setIrClosedAt] = useState<string>("");
 
   // Attachments state
   const [attachments, setAttachments] = useState<AttachmentFile[]>([])
@@ -300,6 +301,7 @@ export default function CreateTicketDialog({
     setIrRaisedAt("")
     setIrExpectedResolutionDate("")
     setIrNotes("")
+    setIrClosedAt("")
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -502,6 +504,9 @@ export default function CreateTicketDialog({
         vendor: irVendor || "siemens",
         expected_resolution_date: irExpectedResolutionDate 
           ? new Date(irExpectedResolutionDate).toISOString() 
+          : undefined,
+        closed_at: irClosedAt  // NEW: Pass IR closure date if provided
+          ? new Date(irClosedAt).toISOString() 
           : undefined,
         notes: irNotes.trim() || undefined,
         created_by_user_id: raisedByUserId,
@@ -1005,7 +1010,7 @@ export default function CreateTicketDialog({
                       </div>
 
                       <div className="space-y-2">
-                        <Label htmlFor="ir-expected-resolution">Expected Resolution Date</Label>
+                        <Label htmlFor="ir-expected-resolution">Expected daResolution Date</Label>
                         <Input
                           id="ir-expected-resolution"
                           type="datetime-local"
@@ -1025,6 +1030,19 @@ export default function CreateTicketDialog({
                           disabled={loading}
                           rows={2}
                         />
+                      </div>
+
+                      {/* NEW: IR Closure Date */}
+                      <div className="space-y-2">
+                        <Label htmlFor="ir-closed-at">IR Closed Date (if already resolved)</Label>
+                        <Input
+                          id="ir-closed-at"
+                          type="datetime-local"
+                          value={irClosedAt}
+                          onChange={(e) => setIrClosedAt(e.target.value)}
+                          disabled={loading}
+                        />
+                        <p className="text-xs text-gray-600">Leave blank if IR is still open</p>
                       </div>
                     </div>
                   )}

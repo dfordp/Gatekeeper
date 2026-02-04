@@ -533,15 +533,15 @@ class AttachmentProcessor:
             return None
     
     @staticmethod
-    def deprecate_attachment(
-        attachment_id: str,
-        reason: Optional[str] = None
-    ) -> bool:
-        """Deprecate an attachment by marking its embeddings as inactive"""
+    def deprecate_attachment(attachment_id: str, reason: Optional[str] = None) -> bool:
+        """Deprecate an attachment by marking its embeddings as inactive in DB and deleting from Qdrant"""
         logger.info(f"Deprecating attachment {attachment_id}...")
         db = SessionLocal()
         
         try:
+            from .embedding_manager import EmbeddingManager
+            
+            # Get all active embeddings for this attachment
             embeddings = db.query(Embedding).filter(
                 Embedding.attachment_id == UUID(attachment_id),
                 Embedding.is_active == True
@@ -549,23 +549,95 @@ class AttachmentProcessor:
             
             if not embeddings:
                 logger.debug(f"No active embeddings found for {attachment_id}")
-                return True  # Still return True - nothing to deprecate is OK
+                return True
             
             deprecation_reason = reason or "attachment_deprecated"
             now = datetime.utcnow()
             
+            # Update PostgreSQL - mark as inactive
             for emb in embeddings:
                 emb.is_active = False
                 emb.deprecated_at = now
                 emb.deprecation_reason = deprecation_reason
             
             db.commit()
-            logger.info(f"✓ Deprecated {len(embeddings)} embeddings (reason: {deprecation_reason})")
+            
+            # Delete from Qdrant for each embedding
+            qdrant_deleted = 0
+            for emb in embeddings:
+                if emb.vector_id:
+                    success = EmbeddingManager._delete_qdrant_embedding(
+                        embedding_id=str(emb.id),
+                        vector_id=emb.vector_id
+                    )
+                    if success:
+                        qdrant_deleted += 1
+            
+            logger.info(f"✓ Deprecated {len(embeddings)} embeddings ({qdrant_deleted} deleted from Qdrant, reason: {deprecation_reason})")
             return True
             
         except Exception as e:
             db.rollback()
             logger.warning(f"Failed to deprecate attachment: {e}")
+            return False
+        finally:
+            db.close()
+            
+    @staticmethod
+    def deprecate_rca_attachments(rca_id: str, reason: Optional[str] = None) -> bool:
+        """Deprecate all embeddings for RCA attachments (mark inactive in DB, delete from Qdrant)"""
+        logger.info(f"Deprecating RCA attachment embeddings for RCA {rca_id}...")
+        db = SessionLocal()
+        
+        try:
+            from core.database import RCAAttachment
+            from .embedding_manager import EmbeddingManager
+            
+            # Get all RCA attachments
+            rca_attachments = db.query(RCAAttachment).filter(
+                RCAAttachment.rca_id == UUID(rca_id)
+            ).all()
+            
+            if not rca_attachments:
+                logger.debug(f"No RCA attachments found for {rca_id}")
+                return True
+            
+            deprecation_reason = reason or "rca_attachments_deprecated"
+            now = datetime.utcnow()
+            total_deprecated = 0
+            qdrant_deleted = 0
+            
+            # For each RCA attachment, deprecate its embeddings
+            for rca_att in rca_attachments:
+                embeddings = db.query(Embedding).filter(
+                    Embedding.rca_attachment_id == rca_att.id,
+                    Embedding.is_active == True
+                ).all()
+                
+                # Update PostgreSQL - mark as inactive
+                for emb in embeddings:
+                    emb.is_active = False
+                    emb.deprecated_at = now
+                    emb.deprecation_reason = deprecation_reason
+                    total_deprecated += 1
+                
+                # Delete from Qdrant for each embedding
+                for emb in embeddings:
+                    if emb.vector_id:
+                        success = EmbeddingManager._delete_qdrant_embedding(
+                            embedding_id=str(emb.id),
+                            vector_id=emb.vector_id
+                        )
+                        if success:
+                            qdrant_deleted += 1
+            
+            db.commit()
+            logger.info(f"✓ Deprecated {total_deprecated} RCA attachment embeddings ({qdrant_deleted} deleted from Qdrant)")
+            return True
+            
+        except Exception as e:
+            db.rollback()
+            logger.warning(f"Failed to deprecate RCA attachments: {e}")
             return False
         finally:
             db.close()

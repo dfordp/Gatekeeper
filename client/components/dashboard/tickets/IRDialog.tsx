@@ -23,7 +23,7 @@ import {
 } from "@/components/ui/select"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Loader2, AlertCircle, CheckCircle, Clock } from "lucide-react"
+import { Loader2, AlertCircle, CheckCircle, Clock, Trash2 } from "lucide-react"
 
 interface IRDialogProps {
   open: boolean
@@ -54,23 +54,33 @@ export default function IRDialog({
   const [newIRNumber, setNewIRNumber] = useState("")
   const [vendor, setVendor] = useState("siemens")
   const [expectedDate, setExpectedDate] = useState("")
+  const [irOpenedAt, setIROpenedAt] = useState("")
+  const [irClosedAt, setIRClosedAt] = useState("")
   const [notes, setNotes] = useState("")
 
   // Manage IR form
   const [ir, setIR] = useState<IncidentReport | null>(null)
   const [irStatus, setIRStatus] = useState("")
   const [vendorStatus, setVendorStatus] = useState("")
-  const [vendorNotes, setVendorNotes] = useState("")
   const [updateNotes, setUpdateNotes] = useState("")
+  const [closedAt, setClosedAt] = useState("")
 
-  // Load existing IR data when dialog opens
+  // Delete confirmation state
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+
+  // In useEffect when loading existing IR
   useEffect(() => {
     if (open && hasOpenIR && existingIR) {
       setIR(existingIR)
       setIRStatus(existingIR.status || "")
       setVendorStatus(existingIR.vendor_status || "")
-      setVendorNotes(existingIR.vendor_notes || "")
       setUpdateNotes("")
+      // Set closure date from the IR's resolved_at if it exists
+      setClosedAt(existingIR.resolved_at 
+        ? new Date(existingIR.resolved_at).toISOString().slice(0, 16)
+        : ""
+      )
+      setShowDeleteConfirm(false)
       setError(null)
       setSuccess(null)
     } else if (open && !hasOpenIR) {
@@ -78,11 +88,52 @@ export default function IRDialog({
       setNewIRNumber("")
       setVendor("siemens")
       setExpectedDate("")
+      setIROpenedAt("")
+      setIRClosedAt("")
       setNotes("")
+      setClosedAt("")
+      setShowDeleteConfirm(false)
       setError(null)
       setSuccess(null)
     }
   }, [open, hasOpenIR, existingIR])
+  
+  // Update handleCloseIR to pass the date
+  const handleCloseIR = async () => {
+    if (!ir) return
+    if (!closedAt) {
+      setError("Please select a closure date")
+      return
+    }
+  
+    setLoading(true)
+    setError(null)
+    setSuccess(null)
+  
+    try {
+      // Convert closedAt to ISO string
+      const closureDate = new Date(closedAt).toISOString()
+      
+      // Call updateIRStatus with closed status (which uses current time)
+      // Or call closeIR with the specific date
+      await irService.closeIR(ir.id, {
+        resolution_notes: updateNotes || undefined,
+        closed_at: closureDate,  // NEW: Pass the closure date
+        closed_by_user_id: undefined,
+      })
+  
+      setSuccess(`IR ${ir.ir_number} closed successfully`)
+  
+      setTimeout(() => {
+        onIRUpdated()
+        onOpenChange(false)
+      }, 1500)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to close IR")
+    } finally {
+      setLoading(false)
+    }
+  }
 
   const handleOpenIR = async () => {
     if (!newIRNumber.trim()) {
@@ -101,6 +152,12 @@ export default function IRDialog({
         expected_resolution_date: expectedDate
           ? new Date(expectedDate).toISOString()
           : undefined,
+        ir_raised_at: irOpenedAt
+          ? new Date(irOpenedAt).toISOString()
+          : undefined,
+        closed_at: irClosedAt
+          ? new Date(irClosedAt).toISOString()
+          : undefined,
         notes: notes.trim() || undefined,
       })
 
@@ -108,6 +165,8 @@ export default function IRDialog({
       setNewIRNumber("")
       setVendor("siemens")
       setExpectedDate("")
+      setIROpenedAt("")
+      setIRClosedAt("")
       setNotes("")
 
       setTimeout(() => {
@@ -136,7 +195,6 @@ export default function IRDialog({
       await irService.updateIRStatus(ir.id, {
         status: irStatus,
         vendor_status: vendorStatus || undefined,
-        vendor_notes: vendorNotes || undefined,
         notes: updateNotes || undefined,
       })
 
@@ -148,6 +206,31 @@ export default function IRDialog({
       }, 1500)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to update IR")
+    } finally {
+      setLoading(false)
+    }
+  }
+
+
+  const handleDeleteIR = async () => {
+    if (!ir) return
+
+    setLoading(true)
+    setError(null)
+    setSuccess(null)
+
+    try {
+      await irService.deleteIR(ir.id)
+
+      setSuccess(`IR ${ir.ir_number} deleted successfully`)
+      setShowDeleteConfirm(false)
+
+      setTimeout(() => {
+        onIRUpdated()
+        onOpenChange(false)
+      }, 1500)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete IR")
     } finally {
       setLoading(false)
     }
@@ -223,6 +306,20 @@ export default function IRDialog({
               </div>
 
               <div className="space-y-2">
+                <Label htmlFor="ir-opened-at">IR Opened Date</Label>
+                <Input
+                  id="ir-opened-at"
+                  type="datetime-local"
+                  value={irOpenedAt}
+                  onChange={(e) => setIROpenedAt(e.target.value)}
+                  disabled={loading}
+                />
+                <p className="text-xs text-gray-600">
+                  The date when the IR was originally opened (if importing legacy data)
+                </p>
+              </div>
+
+              <div className="space-y-2">
                 <Label htmlFor="expected-date">Expected Resolution Date</Label>
                 <Input
                   id="expected-date"
@@ -231,6 +328,20 @@ export default function IRDialog({
                   onChange={(e) => setExpectedDate(e.target.value)}
                   disabled={loading}
                 />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="ir-closed-at">IR Closed Date (if already closed)</Label>
+                <Input
+                  id="ir-closed-at"
+                  type="datetime-local"
+                  value={irClosedAt}
+                  onChange={(e) => setIRClosedAt(e.target.value)}
+                  disabled={loading}
+                />
+                <p className="text-xs text-gray-600">
+                  Leave blank if IR is still open
+                </p>
               </div>
 
               <div className="space-y-2">
@@ -280,6 +391,14 @@ export default function IRDialog({
                           <p className="text-gray-600">Expected Resolution</p>
                           <p className="font-medium">
                             {new Date(ir.expected_resolution_date).toLocaleDateString()}
+                          </p>
+                        </div>
+                      )}
+                      {ir.resolved_at && (
+                        <div>
+                          <p className="text-gray-600">Resolved At</p>
+                          <p className="font-medium">
+                            {new Date(ir.resolved_at).toLocaleDateString()}
                           </p>
                         </div>
                       )}
@@ -341,18 +460,6 @@ export default function IRDialog({
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="vendor-notes">Vendor Notes</Label>
-                <Textarea
-                  id="vendor-notes"
-                  placeholder="Notes from vendor..."
-                  value={vendorNotes}
-                  onChange={(e) => setVendorNotes(e.target.value)}
-                  disabled={loading}
-                  rows={3}
-                />
-              </div>
-
-              <div className="space-y-2">
                 <Label htmlFor="update-notes">Internal Notes</Label>
                 <Textarea
                   id="update-notes"
@@ -364,6 +471,23 @@ export default function IRDialog({
                 />
               </div>
 
+              {/* Closed Date - Only show if status is closed */}
+              {(irStatus === "closed" || ir?.status === "closed") && (
+                <div className="space-y-2 p-3 bg-gray-50 rounded border">
+                  <Label htmlFor="closed-at">IR Closure Date</Label>
+                  <Input
+                    id="closed-at"
+                    type="datetime-local"
+                    value={closedAt}
+                    onChange={(e) => setClosedAt(e.target.value)}
+                    disabled={loading}
+                  />
+                  <p className="text-xs text-gray-600">
+                    The date when the IR was closed/resolved
+                  </p>
+                </div>
+              )}
+
               <div className="flex gap-2">
                 <Button
                   onClick={handleUpdateIR}
@@ -373,6 +497,49 @@ export default function IRDialog({
                   {loading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
                   Update Status
                 </Button>
+              </div>
+
+              {/* Delete Button Section */}
+              <div className="pt-4 border-t">
+                {!showDeleteConfirm ? (
+                  <Button
+                    onClick={() => setShowDeleteConfirm(true)}
+                    variant="destructive"
+                    className="w-full"
+                    disabled={loading}
+                  >
+                    <Trash2 className="h-4 w-4 mr-2" />
+                    Delete Incident Report
+                  </Button>
+                ) : (
+                  <div className="space-y-3 p-4 bg-red-50 rounded border border-red-200">
+                    <p className="text-sm font-medium text-red-900">
+                      Are you sure you want to delete this IR? This action cannot be undone.
+                    </p>
+                    <p className="text-xs text-red-800">
+                      The incident report will be permanently deleted, and all related embeddings will be removed.
+                    </p>
+                    <div className="flex gap-2">
+                      <Button
+                        onClick={handleDeleteIR}
+                        variant="destructive"
+                        disabled={loading}
+                        className="flex-1"
+                      >
+                        {loading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                        Yes, Delete
+                      </Button>
+                      <Button
+                        onClick={() => setShowDeleteConfirm(false)}
+                        variant="outline"
+                        disabled={loading}
+                        className="flex-1"
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}

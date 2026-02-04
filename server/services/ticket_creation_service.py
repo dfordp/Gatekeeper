@@ -63,6 +63,7 @@ class TicketCreationService:
         level: Optional[str] = None,
         assigned_engineer_id: Optional[str] = None,
         created_at: Optional[datetime] = None,
+        closed_at: Optional[datetime] = None,
         created_by_admin_id: Optional[str] = None,
         ticket_no: Optional[str] = None,
         status: Optional[str] = None
@@ -133,12 +134,12 @@ class TicketCreationService:
             )
             
             # Set closed_at if status is closed
-            if initial_status == "closed" and created_at:
+            if initial_status == "closed" and closed_at:
                 try:
-                    if isinstance(created_at, str):
-                        ticket.closed_at = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                    if isinstance(closed_at, str):
+                        ticket.closed_at = datetime.fromisoformat(closed_at.replace('Z', '+00:00'))
                     else:
-                        ticket.closed_at = created_at
+                        ticket.closed_at = closed_at
                 except Exception as e:
                     logger.warning(f"Failed to parse closed_at date: {e}")
             
@@ -446,7 +447,15 @@ class TicketCreationService:
                     "file_name": attachment.file_path.split('/')[-1] if attachment.file_path else "unknown"
                 }
             )
-            
+        # Deprecate embeddings using AttachmentProcessor
+            try:
+                AttachmentProcessor.deprecate_attachment(
+                    attachment_id=attachment_id,
+                    reason="attachment_deleted"
+                )
+                logger.info(f"✓ Deprecated embeddings for attachment {attachment_id}")
+            except Exception as e:
+                logger.warning(f"Failed to deprecate attachment embeddings: {e}")
             # Delete from database
             db.delete(attachment)
             db.add(deletion_event)
@@ -466,16 +475,7 @@ class TicketCreationService:
                     logger.warning(f"Failed to create audit log: {e}")
             
             logger.info(f"✓ Attachment deleted: {attachment_id}")
-            
-            # Deprecate embeddings using AttachmentProcessor
-            try:
-                AttachmentProcessor.deprecate_attachment(
-                    attachment_id=attachment_id,
-                    reason="attachment_deleted"
-                )
-                logger.info(f"✓ Deprecated embeddings for attachment {attachment_id}")
-            except Exception as e:
-                logger.warning(f"Failed to deprecate attachment embeddings: {e}")
+        
             
             return True
             
@@ -742,6 +742,17 @@ class TicketCreationService:
                 db.flush()
             
             db.commit()
+            try:
+                EmbeddingManager.add_resolution_embedding(
+                    ticket_id=ticket_id,
+                    company_id=str(ticket.company_id),
+                    solution_description=solution_description,
+                    steps_taken=steps_taken,
+                    resources_used=resources_used,
+                    follow_up_notes=follow_up_notes
+                )
+            except Exception as e:
+                logger.warning(f"Failed to create resolution embedding: {e}")
             logger.info(f"✓ Resolution note {'updated' if is_update else 'added'}")
             
             # Audit log
@@ -801,6 +812,10 @@ class TicketCreationService:
             
             # Deprecate all embeddings using EmbeddingManager
             try:
+                EmbeddingManager.deprecate_resolution_embeddings(
+                    ticket_id=ticket_id,
+                    reason="ticket_deleted"
+                )
                 EmbeddingManager.deprecate_ticket_embeddings(
                     ticket_id=ticket_id,
                     reason="ticket_deleted"
@@ -907,6 +922,7 @@ class TicketCreationService:
         category: Optional[str] = None,
         level: Optional[str] = None,
         created_at: Optional[datetime] = None,
+        closed_at: Optional[datetime] = None,  # ADD THIS
         admin_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """Update ticket details"""
@@ -944,6 +960,9 @@ class TicketCreationService:
             
             if created_at is not None:
                 ticket.created_at = created_at
+            
+            if closed_at is not None:  # ADD THIS BLOCK
+                ticket.closed_at = closed_at
             ticket.updated_at = datetime.utcnow()
             db.flush()
             
