@@ -24,6 +24,7 @@ import {
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Loader2, AlertCircle, CheckCircle, Clock, Trash2 } from "lucide-react"
+import { toUTCISOString } from "@/lib/date-utils"
 
 interface IRDialogProps {
   open: boolean
@@ -68,18 +69,33 @@ export default function IRDialog({
   // Delete confirmation state
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
 
-  // In useEffect when loading existing IR
+    // Add this helper function right after the imports, before the interface definition (after line 25):
+  
+  /**
+   * Convert ISO UTC string to datetime-local format with proper timezone conversion
+   * Converts "2026-01-21T04:28:00.000Z" to "2026-01-21T09:58" (for UTC+5:30)
+   */
+  const isoToDatetimeLocal = (isoString: string): string => {
+    if (!isoString) return ""
+    // Parse as UTC and extract local timezone components
+    const date = new Date(isoString)
+    const year = date.getFullYear()
+    const month = String(date.getMonth() + 1).padStart(2, '0')
+    const day = String(date.getDate()).padStart(2, '0')
+    const hours = String(date.getHours()).padStart(2, '0')
+    const minutes = String(date.getMinutes()).padStart(2, '0')
+    return `${year}-${month}-${day}T${hours}:${minutes}`
+  }
+  
+  // Then replace the useEffect hook (lines 67-83) with:
   useEffect(() => {
     if (open && hasOpenIR && existingIR) {
       setIR(existingIR)
       setIRStatus(existingIR.status || "")
       setVendorStatus(existingIR.vendor_status || "")
       setUpdateNotes("")
-      // Set closure date from the IR's resolved_at if it exists
-      setClosedAt(existingIR.resolved_at 
-        ? new Date(existingIR.resolved_at).toISOString().slice(0, 16)
-        : ""
-      )
+      // Set closure date using proper timezone conversion
+      setClosedAt(existingIR.resolved_at ? isoToDatetimeLocal(existingIR.resolved_at) : "")
       setShowDeleteConfirm(false)
       setError(null)
       setSuccess(null)
@@ -112,13 +128,13 @@ export default function IRDialog({
   
     try {
       // Convert closedAt to ISO string
-      const closureDate = new Date(closedAt).toISOString()
+      const closureDate = closedAt ? (closedAt + ':00.000Z') : toUTCISOString(new Date())
       
       // Call updateIRStatus with closed status (which uses current time)
       // Or call closeIR with the specific date
       await irService.closeIR(ir.id, {
         resolution_notes: updateNotes || undefined,
-        closed_at: closureDate,  // NEW: Pass the closure date
+        closed_at: closureDate,  // ISO format with UTC
         closed_by_user_id: undefined,
       })
   
@@ -146,17 +162,18 @@ export default function IRDialog({
     setSuccess(null)
 
     try {
+      
       await irService.openIR(ticketId, {
         ir_number: newIRNumber.trim(),
         vendor,
         expected_resolution_date: expectedDate
-          ? new Date(expectedDate).toISOString()
+          ? toUTCISOString(new Date(expectedDate))
           : undefined,
         ir_raised_at: irOpenedAt
-          ? new Date(irOpenedAt).toISOString()
+          ? toUTCISOString(new Date(irOpenedAt))
           : undefined,
         closed_at: irClosedAt
-          ? new Date(irClosedAt).toISOString()
+          ? toUTCISOString(new Date(irClosedAt))
           : undefined,
         notes: notes.trim() || undefined,
       })

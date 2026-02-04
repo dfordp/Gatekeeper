@@ -15,6 +15,7 @@ from core.database import (
     SessionLocal, Ticket, RootCauseAnalysis, User, RCAAttachment,
     TicketEvent, AdminAuditLog
 )
+from utils.datetime_utils import to_iso_string
 from .embedding_manager import EmbeddingManager
 from .attachment_processor import AttachmentProcessor
 from utils.exceptions import ValidationError, NotFoundError
@@ -224,7 +225,7 @@ class RCAService:
                     "id": str(att.id),
                     "file_path": att.file_path,
                     "type": att.type,
-                    "created_at": att.created_at.isoformat() if att.created_at else None
+                    "created_at": to_iso_string(att.created_at) if att.created_at else None
                 }
                 for att in attachments
             ]
@@ -238,8 +239,8 @@ class RCAService:
                 "resolution_steps": rca.resolution_steps,
                 "attachments": attachment_list,
                 "created_by": rca.created_by_user.name if rca.created_by_user else None,
-                "created_at": rca.created_at.isoformat() if rca.created_at else None,
-                "updated_at": rca.updated_at.isoformat() if rca.updated_at else None
+                "created_at": to_iso_string(rca.created_at) if rca.created_at else None,
+                "updated_at": to_iso_string(rca.updated_at) if rca.updated_at else None
             }
         except ValueError:
             return None
@@ -335,7 +336,7 @@ class RCAService:
                     "ticket_no": rca.ticket.ticket_no if rca.ticket else None,
                     "root_cause": rca.root_cause_description[:150],
                     "attachment_count": len(rca.attachments or []),
-                    "created_at": rca.created_at.isoformat() if rca.created_at else None
+                    "created_at": to_iso_string(rca.created_at) if rca.created_at else None
                 }
                 for rca in rcas
             ]

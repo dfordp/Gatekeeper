@@ -17,6 +17,8 @@ import logging
 from typing import Dict, Optional
 from datetime import datetime, timedelta
 
+from utils.datetime_utils import to_iso_string
+
 sys.path.insert(0, os.path.dirname(__file__))
 
 from database import SessionLocal, Ticket, TicketEvent, Embedding
@@ -228,7 +230,7 @@ class AdaptiveThresholdService:
                 payload={
                     "confidence": search_confidence,
                     "rating": rating,
-                    "timestamp": datetime.utcnow().isoformat()
+                    "timestamp": to_iso_string(datetime.utcnow())
                 }
             )
             db.add(event)

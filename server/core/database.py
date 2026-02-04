@@ -88,7 +88,7 @@ class Ticket(Base):
     raised_by_user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=False)
     assigned_engineer_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
-    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     closed_at = Column(DateTime, nullable=True)
     reopened_at = Column(DateTime, nullable=True)
     attachment_ids = Column(JSONB, nullable=True, default=[])
@@ -145,7 +145,7 @@ class IncidentReport(Base):
     created_by_user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=False)
     updated_by_user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     
     ticket = relationship("Ticket", foreign_keys=[ticket_id])
     created_by_user = relationship("User", foreign_keys=[created_by_user_id])
@@ -279,7 +279,7 @@ class RootCauseAnalysis(Base):
     related_ticket_ids = Column(JSONB, nullable=True, default=[])
     created_by_user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=False)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
-    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     
     ticket = relationship("Ticket", foreign_keys=[ticket_id], back_populates="root_cause_analysis")
     created_by_user = relationship("User", foreign_keys=[created_by_user_id], back_populates="root_cause_analyses")
@@ -330,7 +330,7 @@ class ResolutionNote(Base):
     follow_up_notes = Column(Text, nullable=True)
     created_by_user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=False)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
-    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     
     ticket = relationship("Ticket", foreign_keys=[ticket_id], back_populates="resolution_note")
     created_by_user = relationship("User", foreign_keys=[created_by_user_id], back_populates="resolution_notes")
@@ -415,7 +415,7 @@ class AdminUser(Base):
     is_active = Column(Boolean, default=True, index=True)
     company_id = Column(UUID(as_uuid=True), ForeignKey("company.id"), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
-    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     last_login = Column(DateTime, nullable=True)
     
     company = relationship("Company", back_populates="admin_users")

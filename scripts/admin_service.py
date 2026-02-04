@@ -32,6 +32,8 @@ from typing import Dict, List, Any, Optional
 from datetime import datetime
 import uuid
 
+from server.utils.datetime_utils import to_iso_string
+
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -130,7 +132,7 @@ class AdminService:
                 "embedding_id": str(embedding.id),
                 "ticket_id": str(embedding.ticket_id),
                 "reason": reason,
-                "deprecated_at": embedding.deprecated_at.isoformat()
+                "deprecated_at": to_iso_string(embedding.deprecated_at)
             }
             
         except Exception as e:
@@ -200,7 +202,7 @@ class AdminService:
             for event in link_events:
                 related["linking_events"].append({
                     "event_type": event.event_type,
-                    "created_at": event.created_at.isoformat(),
+                    "created_at": to_iso_string(event.created_at),
                     "payload": event.payload
                 })
                 
@@ -218,7 +220,7 @@ class AdminService:
                                 "ticket_no": dup_ticket.ticket_no,
                                 "subject": dup_ticket.subject,
                                 "status": dup_ticket.status,
-                                "created_at": dup_ticket.created_at.isoformat()
+                                "created_at": to_iso_string(dup_ticket.created_at)
                             })
             
             # Find tickets with similar embeddings
@@ -310,15 +312,15 @@ class AdminService:
                     "source_type": embedding.source_type,
                     "chunk_index": embedding.chunk_index,
                     "is_active": embedding.is_active,
-                    "created_at": embedding.created_at.isoformat(),
-                    "deprecated_at": embedding.deprecated_at.isoformat() if embedding.deprecated_at else None,
+                    "created_at": to_iso_string(embedding.created_at),
+                    "deprecated_at": to_iso_string(embedding.deprecated_at) if embedding.deprecated_at else None,
                     "deprecation_reason": embedding.deprecation_reason,
                     "content_preview": embedding.text_content[:200]
                 },
                 "ticket_events": [
                     {
                         "event_type": e.event_type,
-                        "created_at": e.created_at.isoformat(),
+                        "created_at": to_iso_string(e.created_at),
                         "actor_id": str(e.actor_user_id),
                         "payload": e.payload
                     }

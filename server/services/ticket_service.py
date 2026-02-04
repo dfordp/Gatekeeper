@@ -9,7 +9,7 @@ from uuid import UUID
 from core.database import SessionLocal, Ticket, TicketEvent, AdminAuditLog, User
 from utils.exceptions import ValidationError, NotFoundError, ConflictError
 from core.logger import get_logger
-
+from utils.datetime_utils import serialize_datetime_fields, to_iso_string
 logger = get_logger(__name__)
 
 
@@ -126,7 +126,7 @@ class TicketService:
     @staticmethod
     def _format_ticket(ticket) -> Dict[str, Any]:
         """Format ticket object as dictionary"""
-        return {
+        response = {
             "id": str(ticket.id),
             "ticket_no": ticket.ticket_no,
             "subject": ticket.subject,
@@ -152,17 +152,17 @@ class TicketService:
             } if ticket.assigned_engineer else None,
             "assigned_to": ticket.assigned_engineer.name if ticket.assigned_engineer else None,
             "assigned_to_id": str(ticket.assigned_engineer_id) if ticket.assigned_engineer_id else None,
-            "created_at": ticket.created_at.isoformat(),
-            "updated_at": ticket.updated_at.isoformat(),
-            "closed_at": ticket.closed_at.isoformat() if ticket.closed_at else None,
-            "reopened_at": ticket.reopened_at.isoformat() if ticket.reopened_at else None,
+            "created_at": to_iso_string(ticket.created_at),
+            "updated_at": to_iso_string(ticket.updated_at),
+            "closed_at": to_iso_string(ticket.closed_at)if ticket.closed_at else None,
+            "reopened_at": to_iso_string(ticket.reopened_at) if ticket.reopened_at else None,
             "attachments": [
                 {
                     "id": str(att.id),
                     "type": att.type,
                     "file_path": att.file_path,
                     "mime_type": att.mime_type,
-                    "created_at": att.created_at.isoformat()
+                    "created_at": to_iso_string(att.created_at)
                 }
                 for att in ticket.attachments
             ] if ticket.attachments else [],
@@ -179,12 +179,12 @@ class TicketService:
                         "type": att.type,
                         "file_path": att.file_path,
                         "mime_type": att.mime_type,
-                        "created_at": att.created_at.isoformat()
+                        "created_at": to_iso_string(att.created_at)
                     }
                     for att in ticket.root_cause_analysis.attachments
                 ] if ticket.root_cause_analysis.attachments else [],
-                "created_at": ticket.root_cause_analysis.created_at.isoformat(),
-                "updated_at": ticket.root_cause_analysis.updated_at.isoformat()
+                "created_at": to_iso_string(ticket.root_cause_analysis.created_at),
+                "updated_at": to_iso_string(ticket.root_cause_analysis.updated_at)
             } if ticket.root_cause_analysis else None,
             "resolution_note": {
                 "id": str(ticket.resolution_note.id),
@@ -192,8 +192,8 @@ class TicketService:
                 "steps_taken": ticket.resolution_note.steps_taken or [],
                 "resources_used": ticket.resolution_note.resources_used or [],
                 "follow_up_notes": ticket.resolution_note.follow_up_notes,
-                "created_at": ticket.resolution_note.created_at.isoformat(),
-                "updated_at": ticket.resolution_note.updated_at.isoformat()
+                "created_at": to_iso_string(ticket.resolution_note.created_at),
+                "updated_at": to_iso_string(ticket.resolution_note.updated_at)
             } if ticket.resolution_note else None,
             "events": [
                 {
@@ -202,17 +202,18 @@ class TicketService:
                     "actor_user_id": str(event.actor_user_id),
                     "actor": event.actor_user.name if event.actor_user else None,
                     "payload": event.payload,
-                    "created_at": event.created_at.isoformat()
+                    "created_at": to_iso_string(event.created_at)
                 }
                 for event in ticket.events
             ] if ticket.events else [],
             "has_ir": ticket.has_ir or False,
             "ir_number": ticket.ir_number,
-            "ir_raised_at": ticket.ir_raised_at.isoformat() if ticket.ir_raised_at else None,
-            "ir_expected_resolution_date": ticket.ir_expected_resolution_date.isoformat() if ticket.ir_expected_resolution_date else None,
+            "ir_raised_at": to_iso_string(ticket.ir_raised_at) if ticket.ir_raised_at else None,
+            "ir_expected_resolution_date": to_iso_string(ticket.ir_expected_resolution_date) if ticket.ir_expected_resolution_date else None,
             "ir_notes": ticket.ir_notes,
-            "ir_closed_at": ticket.ir_closed_at.isoformat() if ticket.ir_closed_at else None,
+            "ir_closed_at": to_iso_string(ticket.ir_closed_at) if ticket.ir_closed_at else None,
         }
+        return serialize_datetime_fields(response)
     
     @staticmethod
     def update_ticket_status(
@@ -266,7 +267,7 @@ class TicketService:
                 payload={
                     "old_status": old_status,
                     "new_status": new_status,
-                    "changed_at": datetime.utcnow().isoformat()
+                    "changed_at": to_iso_string(datetime.utcnow())
                 }
             )
             db.add(status_event)
@@ -369,7 +370,7 @@ class TicketService:
                     "assigned_to": engineer.name,
                     "assigned_to_id": engineer_id,
                     "previous_assignment": None,
-                    "assigned_at": datetime.utcnow().isoformat()
+                    "assigned_at": to_iso_string(datetime.utcnow())
                 }
             )
             db.add(assignment_event)
@@ -538,7 +539,7 @@ class TicketService:
                 
                 if daily_count > 0:
                     trends.append({
-                        "date": current_date.isoformat(),
+                        "date": to_iso_string(current_date),
                         "count": daily_count
                     })
                 

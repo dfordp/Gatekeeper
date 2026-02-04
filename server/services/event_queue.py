@@ -52,6 +52,7 @@ import psycopg2.extensions
 from dotenv import load_dotenv
 
 from core.database import SessionLocal
+from utils.datetime_utils import to_iso_string
 
 load_dotenv()
 
@@ -126,7 +127,7 @@ class EventQueue:
                 return False
             
             # Add timestamp
-            data["timestamp"] = datetime.utcnow().isoformat()
+            data["timestamp"] = to_iso_string(datetime.utcnow())
             data["event_type"] = event_type.value
             
             payload = json.dumps(data)

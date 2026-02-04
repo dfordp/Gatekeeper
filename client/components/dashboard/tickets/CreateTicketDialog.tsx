@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/select"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Loader2, Plus, AlertCircle, Calendar, Building2, Trash2, FileUp, X } from "lucide-react"
+import { toUTCISOString } from "@/lib/date-utils"
 
 interface CreateTicketDialogProps {
   currentUserId: string
@@ -349,12 +350,14 @@ export default function CreateTicketDialog({
         category: category || undefined,
         level: level || undefined,
         assigned_engineer_id: assignedEngineer || undefined,
-        created_at: isOlderTicket && createdAt ? new Date(createdAt).toISOString() : undefined,
+        created_at: isOlderTicket && createdAt 
+          ? toUTCISOString(new Date(createdAt))
+          : undefined,
         ticket_no: ticketNo || undefined,
         status: isOlderTicket && status ? status : undefined,
         closed_at:
           isOlderTicket && status === "closed" && closedAt
-            ? new Date(closedAt).toISOString()
+            ? toUTCISOString(new Date(closedAt))
             : undefined,
       }
 
@@ -481,7 +484,7 @@ export default function CreateTicketDialog({
               .map((s) => s.trim())
               .filter((s) => s.length > 0)
           : undefined,
-        ticket_closed_at: closedAt ? new Date(closedAt).toISOString() : null,
+        ticket_closed_at: closedAt ? toUTCISOString(new Date(closedAt)) : null,
       }
       await ticketService.createRCA(ticketId, rcaRequest)
       console.log("✓ RCA added successfully")
@@ -503,10 +506,10 @@ export default function CreateTicketDialog({
         ir_number: irNumber.trim(),
         vendor: irVendor || "siemens",
         expected_resolution_date: irExpectedResolutionDate 
-          ? new Date(irExpectedResolutionDate).toISOString() 
+          ? toUTCISOString(new Date(irExpectedResolutionDate))
           : undefined,
-        closed_at: irClosedAt  // NEW: Pass IR closure date if provided
-          ? new Date(irClosedAt).toISOString() 
+        closed_at: irClosedAt
+          ? toUTCISOString(new Date(irClosedAt))
           : undefined,
         notes: irNotes.trim() || undefined,
         created_by_user_id: raisedByUserId,

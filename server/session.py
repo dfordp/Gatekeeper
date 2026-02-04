@@ -4,6 +4,8 @@ from datetime import datetime
 from typing import Optional
 from enum import Enum
 
+from utils.datetime_utils import to_iso_string
+
 # Define all enum options as dynamic sources
 class Environment(str, Enum):
     PRODUCTION = "Production"
@@ -126,7 +128,7 @@ def validate_software(value: str) -> str:
 class SupportSession:
     """Stores session state with validation."""
     chat_id: int
-    created_at: datetime = field(default_factory=datetime.now)
+    created_at: datetime = field(default_factory=datetime.utcnow)
     
     # Collected information - validated on assignment
     _user_name: Optional[str] = None
@@ -256,7 +258,7 @@ class SupportSession:
             "environment": self.environment.value if self.environment else None,
             "impact": self.impact.value if self.impact else None,
             "attachments": self.attachments,
-            "created_at": self.created_at.isoformat(),
+            "created_at": to_iso_string(self.created_at),
         }
 
 # Global session store (in production, use Redis or database)

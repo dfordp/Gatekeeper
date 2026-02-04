@@ -5,6 +5,7 @@ from datetime import datetime
 from uuid import UUID
 
 from core.database import SessionLocal, Ticket, IncidentReport, IREvent, User
+from utils.datetime_utils import to_iso_string
 from utils.exceptions import ValidationError, NotFoundError
 from core.logger import get_logger
 
@@ -143,8 +144,8 @@ class IRService:
                 "vendor": ir.vendor,
                 "vendor_status": ir.vendor_status,
                 "notes": ir.notes,
-                "last_vendor_update": ir.last_vendor_update.isoformat() if ir.last_vendor_update else None,
-                "updated_at": ir.updated_at.isoformat()
+                "last_vendor_update": to_iso_string(ir.last_vendor_update) if ir.last_vendor_update else None,
+                "updated_at": to_iso_string(ir.updated_at)
             }
             
         except (ValidationError, NotFoundError):
@@ -196,7 +197,7 @@ class IRService:
                 new_status="closed",
                 notes=resolution_notes,
                 payload={
-                    "resolved_at": ir.resolved_at.isoformat()
+                    "resolved_at": to_iso_string(ir.resolved_at)
                 }
             )
             db.add(ir_event)
@@ -208,7 +209,7 @@ class IRService:
                 "id": str(ir.id),
                 "ir_number": ir.ir_number,
                 "status": ir.status,
-                "resolved_at": ir.resolved_at.isoformat() if ir.resolved_at else None,
+                "resolved_at": to_iso_string(ir.resolved_at) if ir.resolved_at else None,
             }
             
         except (ValidationError, NotFoundError):
@@ -242,9 +243,9 @@ class IRService:
                     "vendor": ir.vendor,
                     "status": ir.status,
                     "company_id": company_id,
-                    "raised_at": ir.raised_at.isoformat(),
-                    "expected_resolution_date": ir.expected_resolution_date.isoformat() if ir.expected_resolution_date else None,
-                    "resolved_at": ir.resolved_at.isoformat() if ir.resolved_at else None,
+                    "raised_at": to_iso_string(ir.raised_at),
+                    "expected_resolution_date": to_iso_string(ir.expected_resolution_date) if ir.expected_resolution_date else None,
+                    "resolved_at": to_iso_string(ir.resolved_at) if ir.resolved_at else None,
                 }
                 for ir in irs
             ]
@@ -318,19 +319,19 @@ class IRService:
                 event_type="ir_opened",
                 actor_user_id=UUID(created_by_user_id) if created_by_user_id else ticket.raised_by_user_id,
                 new_status=ir_status,
-                notes=f"IR opened for ticket {ticket.ticket_no}" + (f" (already closed at {closed_at.isoformat()})" if closed_at else ""),
+                notes=f"IR opened for ticket {ticket.ticket_no}" + (f" (already closed at {to_iso_string(closed_at)})" if closed_at else ""),
                 payload={
                     "ir_number": ir_number,
                     "vendor": vendor,
-                    "expected_resolution_date": expected_resolution_date.isoformat() if expected_resolution_date else None,
-                    "ir_raised_at": ir_raised_at.isoformat() if ir_raised_at else None,
-                    "resolved_at": closed_at.isoformat() if closed_at else None
+                    "expected_resolution_date": to_iso_string(expected_resolution_date) if expected_resolution_date else None,
+                    "ir_raised_at": to_iso_string(ir_raised_at) if ir_raised_at else None,
+                    "resolved_at": to_iso_string(closed_at) if closed_at else None
                 }
             )
             db.add(ir_event)
             db.commit()
             
-            status_note = f" (already closed at {closed_at.isoformat()})" if closed_at else ""
+            status_note = f" (already closed at {to_iso_string(closed_at)})" if closed_at else ""
             logger.info(f"✓ IR opened: {ir_number} for ticket {ticket.ticket_no}{status_note}")
             
             return {
@@ -341,9 +342,9 @@ class IRService:
                 "company_id": str(ticket.company_id),
                 "vendor": ir.vendor,
                 "status": ir.status,
-                "expected_resolution_date": ir.expected_resolution_date.isoformat() if ir.expected_resolution_date else None,
-                "resolved_at": ir.resolved_at.isoformat() if ir.resolved_at else None,
-                "created_at": ir.created_at.isoformat()
+                "expected_resolution_date": to_iso_string(ir.expected_resolution_date) if ir.expected_resolution_date else None,
+                "resolved_at": to_iso_string(ir.resolved_at) if ir.resolved_at else None,
+                "created_at": to_iso_string(ir.created_at)
             }
             
         except (ValidationError, NotFoundError):

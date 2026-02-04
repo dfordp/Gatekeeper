@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, Request, HTTPException, Depends
+from utils.datetime_utils import to_iso_string
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -560,9 +561,9 @@ async def get_chat_session(
             "telegram_chat_id": chat_session.telegram_chat_id,
             "is_active": chat_session.is_active,
             "session_state": chat_session.session_state,
-            "created_at": chat_session.created_at.isoformat(),
-            "last_message_at": chat_session.last_message_at.isoformat(),
-            "closed_at": chat_session.closed_at.isoformat() if chat_session.closed_at else None
+            "created_at": to_iso_string(chat_session.created_at),
+            "last_message_at": to_iso_string(chat_session.last_message_at),
+            "closed_at": to_iso_string(chat_session.closed_at) if chat_session.closed_at else None
         }
     
     except ValueError:
@@ -635,7 +636,7 @@ async def record_search_feedback(
             payload={
                 "similarity_score": similarity_score,
                 "rating": rating,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": to_iso_string(datetime.utcnow())
             }
         )
         db.add(event)
@@ -849,7 +850,7 @@ async def init_chat_session(
             user_id=UUID(user_id),
             company_id=user.company_id,
             telegram_chat_id=str(telegram_chat_id),
-            session_state={"initialized_by_admin": admin_payload.get("id"), "initialized_at": datetime.utcnow().isoformat()}
+            session_state={"initialized_by_admin": admin_payload.get("id"), "initialized_at": to_iso_string(datetime.utcnow())}
         )
         
         db.add(chat_session)
@@ -900,8 +901,8 @@ async def list_chat_sessions(
                     "company": s.user.company.name,
                     "telegram_chat_id": s.telegram_chat_id,
                     "is_active": s.is_active,
-                    "created_at": s.created_at.isoformat(),
-                    "last_message_at": s.last_message_at.isoformat()
+                    "created_at": to_iso_string(s.created_at),
+                    "last_message_at": to_iso_string(s.last_message_at)
                 }
                 for s in sessions
             ]

@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
-from middleware.auth_middleware import get_current_admin
+from utils.datetime_utils import parse_iso_datetime
 from services.ir_service import IRService
 from services.embedding_manager import EmbeddingManager
 from utils.exceptions import ValidationError, NotFoundError
@@ -50,11 +50,17 @@ async def open_ir(
         # Parse dates if provided
         ir_raised_at = None
         if request_data.ir_raised_at:
-            ir_raised_at = datetime.fromisoformat(request_data.ir_raised_at.replace("Z", "+00:00"))
+            try:
+                ir_raised_at = parse_iso_datetime(request_data.ir_raised_at)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=f"Invalid ir_raised_at date: {str(e)}")
         
         closed_at = None
         if request_data.closed_at:
-            closed_at = datetime.fromisoformat(request_data.closed_at.replace("Z", "+00:00"))
+            try:
+                closed_at = parse_iso_datetime(request_data.closed_at)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=f"Invalid closed_at date: {str(e)}")
         
         result = IRService.open_ir(
             ticket_id=ticket_id,
@@ -98,9 +104,9 @@ async def close_ir(
         resolved_at = None
         if hasattr(request_data, 'closed_at') and request_data.closed_at:
             try:
-                resolved_at = datetime.fromisoformat(request_data.closed_at.replace("Z", "+00:00"))
-            except:
-                pass
+                resolved_at = parse_iso_datetime(request_data.closed_at)
+            except ValueError as e:
+                logger.warning(f"Failed to parse closed_at date: {e}")
         
         result = IRService.close_ir(
             ir_id=ir_id,

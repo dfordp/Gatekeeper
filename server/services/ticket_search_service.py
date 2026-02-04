@@ -13,6 +13,7 @@ from uuid import UUID
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance
 from core.database import SessionLocal, Ticket
+from utils.datetime_utils import to_iso_string
 from services.embedding_api_client import EmbeddingAPIClient
 from core.logger import get_logger
 
@@ -114,7 +115,7 @@ class TicketSearchService:
                         "embedding_source_type": payload.get("source_type"),
                         "embedding_text": payload.get("text", "")[:150],
                         "has_rca": ticket.rca is not None,
-                        "created_at": ticket.created_at.isoformat() if ticket.created_at else None,
+                        "created_at": to_iso_string(ticket.created_at) if ticket.created_at else None,
                     }
                     
                     results.append(result)
@@ -207,8 +208,8 @@ class TicketSearchService:
                 "level": ticket.level,
                 "company": ticket.company.name if ticket.company else None,
                 "assigned_to": ticket.assigned_engineer.name if ticket.assigned_engineer else None,
-                "created_at": ticket.created_at.isoformat() if ticket.created_at else None,
-                "closed_at": ticket.closed_at.isoformat() if ticket.closed_at else None,
+                "created_at": to_iso_string(ticket.created_at) if ticket.created_at else None,
+                "closed_at": to_iso_string(ticket.closed_at) if ticket.closed_at else None,
                 "rca": {
                     "description": ticket.rca.root_cause_description,
                     "factors": ticket.rca.contributing_factors,
@@ -219,7 +220,7 @@ class TicketSearchService:
                             "id": str(att.id),
                             "file_path": att.file_path,
                             "type": att.type,
-                            "created_at": att.created_at.isoformat() if att.created_at else None
+                            "created_at": to_iso_string(att.created_at) if att.created_at else None
                         }
                         for att in ticket.rca.attachments
                     ] if ticket.rca.attachments else []
@@ -262,7 +263,7 @@ class TicketSearchService:
                         "id": str(att.id),
                         "file_path": att.file_path,
                         "type": att.type,
-                        "created_at": att.created_at.isoformat() if att.created_at else None
+                        "created_at": to_iso_string(att.created_at) if att.created_at else None
                     }
                     for att in rca.attachments
                 ]

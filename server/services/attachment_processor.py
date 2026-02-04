@@ -44,6 +44,7 @@ from core.database import SessionLocal, Attachment, Embedding
 from core.config import GROQ_API_KEY
 from core.logger import get_logger
 from core.config import GROQ_API_KEY, VISION_MODEL
+from utils.datetime_utils import to_iso_string
 logger = get_logger(__name__)
 
 # Try to import PDF library
@@ -276,7 +277,7 @@ class AttachmentProcessor:
                     try:
                         attachment.metadata = {
                             "visual_description": visual_description[:500],
-                            "analysis_timestamp": datetime.utcnow().isoformat()
+                            "analysis_timestamp": to_iso_string(datetime.utcnow())
                         }
                         db.commit()
                         logger.debug(f"  ✓ Stored visual analysis metadata")
@@ -319,7 +320,7 @@ class AttachmentProcessor:
                         attachment.metadata = {}
                     
                     attachment.metadata["visual_description"] = visual_description[:500]
-                    attachment.metadata["analysis_timestamp"] = datetime.utcnow().isoformat()
+                    attachment.metadata["analysis_timestamp"] = to_iso_string(datetime.utcnow())
                     db.commit()
                     logger.debug(f"  ✓ Stored visual analysis metadata")
                 except Exception as e:

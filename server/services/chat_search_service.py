@@ -16,6 +16,7 @@ from datetime import datetime
 
 from core.database import SessionLocal, Embedding, Ticket, RootCauseAnalysis, Company
 from core.config import QDRANT_HOST, QDRANT_PORT
+from utils.datetime_utils import to_iso_string
 from .embedding_api_client import EmbeddingAPIClient
 
 try:
@@ -147,7 +148,7 @@ class ChatSearchService:
                     "status": ticket.status,
                     "rca_available": rca is not None,
                     "source_type": payload.get("source_type", "ticket_description"),
-                    "created_at": ticket.created_at.isoformat() if ticket.created_at else None
+                    "created_at": to_iso_string(ticket.created_at) if ticket.created_at else None
                 }
                 
                 # Add RCA details if available

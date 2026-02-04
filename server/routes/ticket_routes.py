@@ -22,7 +22,7 @@ from services.ticket_request_queue import TicketRequestQueue
 from utils.exceptions import ValidationError, NotFoundError, ConflictError
 from core.logger import get_logger
 from middleware.cache_decorator import cache_endpoint, invalidate_on_mutation
-
+from utils.datetime_utils import parse_iso_datetime, serialize_datetime_fields
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/tickets", tags=["Tickets"])
@@ -111,8 +111,11 @@ async def create_ticket(
     """
     try:
         created_at = None
-        if request.created_at:
-            created_at = datetime.fromisoformat(request.created_at.replace("Z", "+00:00"))
+        if request.created_at:        
+            try:
+                created_at = parse_iso_datetime(request.created_at)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=f"Invalid created_at date: {str(e)}")
         
         # Create ticket (synchronous)
         result = TicketCreationService.create_ticket(
@@ -143,7 +146,7 @@ async def create_ticket(
             logger.warning(f"Failed to get ticket status: {e}")
             result["async_tasks"] = {"error": "Failed to track async tasks"}
         
-        return result
+        return serialize_datetime_fields(result)
         
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -196,7 +199,7 @@ async def get_ticket_creation_status(ticket_id: str):
     """
     try:
         status = TicketRequestQueue.get_ticket_status(ticket_id)
-        return status
+        return serialize_datetime_fields(status)
     except Exception as e:
         logger.error(f"Error getting ticket creation status: {e}")
         raise HTTPException(status_code=500, detail="Failed to get ticket status")
@@ -228,7 +231,7 @@ async def get_queue_task_status(task_id: str):
         task_status = TicketRequestQueue.get_task_status(task_id)
         if not task_status:
             raise HTTPException(status_code=404, detail="Task not found")
-        return task_status
+        return serialize_datetime_fields(task_status)
     except HTTPException:
         raise
     except Exception as e:
@@ -265,8 +268,8 @@ async def get_queue_statistics():
     }
     """
     try:
-        stats = TicketRequestQueue.get_stats()
-        return stats
+       stats = TicketRequestQueue.get_stats()
+       return serialize_datetime_fields(stats)
     except Exception as e:
         logger.error(f"Error getting queue stats: {e}")
         raise HTTPException(status_code=500, detail="Failed to get queue statistics")
@@ -337,7 +340,7 @@ async def upload_attachment(
             admin_id=None
         )
         
-        return attachment_result
+        return serialize_datetime_fields(attachment_result)
         
     except NotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -372,7 +375,7 @@ async def add_attachment(
             created_by_user_id=request.created_by_user_id,
             admin_id=None
         )
-        return result
+        return serialize_datetime_fields(result)
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except NotFoundError as e:
@@ -415,7 +418,7 @@ async def add_rca(
         
         # Service already queued and completed RCA task - don't queue again!
         logger.info(f"✓ RCA endpoint success: {result}")
-        return result
+        return serialize_datetime_fields(result)
         
     except ValidationError as e:
         logger.error(f"ValidationError in RCA: {e}")
@@ -446,7 +449,7 @@ async def add_resolution_note(
             follow_up_notes=request.follow_up_notes,
             admin_id=admin_payload.get("sub")
         )
-        return result
+        return serialize_datetime_fields(result)
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except NotFoundError as e:
@@ -470,7 +473,7 @@ async def delete_ticket(
             ticket_id=ticket_id,
             admin_id=admin_payload.get("id")
         )
-        return result
+        return serialize_datetime_fields(result)
     except NotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -490,15 +493,17 @@ async def update_ticket(
         # Parse dates if provided
         created_at = None
         if request.created_at:
-            created_at = datetime.fromisoformat(
-                request.created_at.replace('Z', '+00:00')
-            )
+            try:
+                created_at = parse_iso_datetime(request.created_at)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=f"Invalid created_at date: {str(e)}")
         
         closed_at = None
         if request.closed_at:
-            closed_at = datetime.fromisoformat(
-                request.closed_at.replace('Z', '+00:00')
-            )
+            try:
+                closed_at = parse_iso_datetime(request.closed_at)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=f"Invalid closed_at date: {str(e)}")
         
         result = TicketCreationService.update_ticket(
             ticket_id=ticket_id,
@@ -511,7 +516,7 @@ async def update_ticket(
             closed_at=closed_at, 
             admin_id=admin_payload.get("id"),
         )
-        return result
+        return serialize_datetime_fields(result)
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except NotFoundError as e:
@@ -592,7 +597,7 @@ async def delete_attachment(
             attachment_id=attachment_id
         )
         logger.info(f"✓ Delete successful: {result}")
-        return result
+        return serialize_datetime_fields(result)
     except NotFoundError as e:
         logger.warning(f"NotFound: {str(e)}")
         raise HTTPException(status_code=404, detail=str(e))
@@ -655,13 +660,13 @@ async def upload_rca_attachment(
         logger.info(f"RCA attachment upload - using: {storage_path}")
         
         # Return the file path to be used when creating/updating RCA
-        return {
+        return serialize_datetime_fields({
             "success": True,
             "file_path": storage_path,
             "file_name": result.get("file_name"),
             "file_size": result.get("file_size"),
             "mime_type": file.content_type
-        }
+        })
         
     except NotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -741,11 +746,11 @@ async def delete_rca_attachment(
             
             logger.info(f"✓ RCA attachment deleted: {attachment_id}")
             
-            return {
+            return serialize_datetime_fields({
                 "success": True,
                 "message": "RCA attachment deleted successfully",
                 "attachment_id": attachment_id
-            }
+            })
         finally:
             db.close()
     except HTTPException:

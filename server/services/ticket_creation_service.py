@@ -20,6 +20,7 @@ from core.database import (
     SessionLocal, Ticket, TicketEvent, RootCauseAnalysis, ResolutionNote,
     Attachment, AdminAuditLog, Company, User
 )
+from utils.datetime_utils import to_iso_string
 from .embedding_manager import EmbeddingManager
 from .attachment_processor import AttachmentProcessor
 from .ticket_request_queue import TicketRequestQueue, TaskType, TaskStatus
@@ -135,13 +136,8 @@ class TicketCreationService:
             
             # Set closed_at if status is closed
             if initial_status == "closed" and closed_at:
-                try:
-                    if isinstance(closed_at, str):
-                        ticket.closed_at = datetime.fromisoformat(closed_at.replace('Z', '+00:00'))
-                    else:
-                        ticket.closed_at = closed_at
-                except Exception as e:
-                    logger.warning(f"Failed to parse closed_at date: {e}")
+                ticket.closed_at = closed_at
+                
             
             db.add(ticket)
             db.flush()
@@ -230,7 +226,7 @@ class TicketCreationService:
                 "company_id": str(ticket.company_id),
                 "raised_by_user_id": str(ticket.raised_by_user_id),
                 "assigned_engineer_id": str(ticket.assigned_engineer_id) if ticket.assigned_engineer_id else None,
-                "created_at": ticket.created_at.isoformat()
+                "created_at": to_iso_string(ticket.created_at)
             }
             
         except (ValidationError, NotFoundError, ConflictError):
@@ -372,7 +368,7 @@ class TicketCreationService:
                 "mime_type": attachment.mime_type,
                 "embeddings_created": embedding_count,
                 "task_id": task_id,
-                "created_at": attachment.created_at.isoformat()
+                "created_at": to_iso_string(attachment.created_at)
             }
             
         except (NotFoundError, ValidationError):
@@ -658,7 +654,7 @@ class TicketCreationService:
                 "related_ticket_ids": rca.related_ticket_ids,
                 "ticket_closed_at": ticket_closed_at,
                 "task_id": task_id,
-                "created_at": rca.created_at.isoformat(),
+                "created_at": to_iso_string(rca.created_at),
                 "is_update": is_update
             }
                     
@@ -778,7 +774,7 @@ class TicketCreationService:
                 "steps_taken": note.steps_taken,
                 "resources_used": note.resources_used,
                 "follow_up_notes": note.follow_up_notes,
-                "created_at": note.created_at.isoformat(),
+                "created_at": to_iso_string(note.created_at),
                 "is_update": is_update
             }
             
@@ -847,7 +843,7 @@ class TicketCreationService:
                 payload={
                     "ticket_no": ticket.ticket_no,
                     "subject": ticket.subject,
-                    "deleted_at": datetime.utcnow().isoformat()
+                    "deleted_at": to_iso_string(datetime.utcnow())
                 }
             )
             db.add(deletion_event)
@@ -900,7 +896,7 @@ class TicketCreationService:
                 "id": ticket_id,
                 "ticket_no": ticket.ticket_no,
                 "deleted": True,
-                "deleted_at": datetime.utcnow().isoformat()
+                "deleted_at": to_iso_string(datetime.utcnow())
             }
             
         except NotFoundError:
@@ -979,7 +975,7 @@ class TicketCreationService:
             if level is not None:
                 changes["level"] = level
             if created_at is not None:  
-                changes["created_at"] = created_at.isoformat()
+                changes["created_at"] = to_iso_string(created_at)
             
             ticket_event = TicketEvent(
                 ticket_id=ticket_uuid,
@@ -987,7 +983,7 @@ class TicketCreationService:
                 actor_user_id=ticket.raised_by_user_id,
                 payload={
                     "changes": changes,
-                    "updated_at": datetime.utcnow().isoformat()
+                    "updated_at": to_iso_string(datetime.utcnow())
                 }
             )
             db.add(ticket_event)

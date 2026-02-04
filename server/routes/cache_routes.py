@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from typing import Dict, Any, Optional
 
 from middleware.auth_middleware import get_current_admin
+from utils.datetime_utils import to_iso_string
 from services.redis_cache_service import get_cache
 from core.cache_config import get_invalidation_tags
 from core.logger import get_logger
@@ -34,7 +35,7 @@ async def get_cache_metrics(admin_payload: dict = Depends(get_current_admin)) ->
         return {
             "metrics": metrics,
             "server": info,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": to_iso_string(datetime.utcnow())
         }
     except Exception as e:
         logger.error(f"Failed to get cache metrics: {e}")

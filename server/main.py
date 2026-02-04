@@ -31,6 +31,7 @@ from core.database import init_db, test_connection
 from core.config import CORS_ORIGINS, TELEGRAM_TOKEN, TELEGRAM_API, GROQ_API_KEY, MODEL, VISION_MODEL
 from core.logger import get_logger
 
+from utils.datetime_utils import to_iso_string
 from services.redis_cache_service import init_cache, close_cache
 
 # Middleware
@@ -1059,7 +1060,7 @@ async def health_check():
         "version": "2.0.0",
         "active_sessions": len(sessions),
         "conversation_histories": len(conversation_state),
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": to_iso_string(datetime.utcnow())
     }
 
 

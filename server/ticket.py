@@ -5,6 +5,7 @@ import os
 from datetime import datetime
 from typing import Optional, Dict, Any
 from enum import Enum
+from utils.datetime_utils import to_iso_string
 from session import SupportSession, IssueCategory, Environment, ImpactLevel
 
 class Ticket:
@@ -12,8 +13,8 @@ class Ticket:
     def __init__(self, session: SupportSession, ticket_id: str = None):
         self.ticket_id = ticket_id or str(uuid.uuid4())[:8].upper()
         self.session = session
-        self.created_at = datetime.now()
-        self.updated_at = datetime.now()
+        self.created_at = datetime.utcnow()
+        self.updated_at = datetime.utcnow()
         self.status = "open"
     
     def to_dict(self) -> dict:
@@ -21,8 +22,8 @@ class Ticket:
         return {
             "ticket_id": self.ticket_id,
             "status": self.status,
-            "created_at": self.created_at.isoformat(),
-            "updated_at": self.updated_at.isoformat(),
+            "created_at": to_iso_string(self.created_at),
+            "updated_at": to_iso_string(self.updated_at),
             "chat_id": self.session.chat_id,
             "user_name": self.session.user_name,
             "company_name": self.session.company_name,
@@ -95,7 +96,7 @@ def update_ticket(ticket_id: str, updates: Dict[str, Any], filepath: str = "tick
                     if data.get("ticket_id") == ticket_id.upper():
                         # Update this ticket
                         data.update(updates)
-                        data["updated_at"] = datetime.now().isoformat()
+                        data["updated_at"] = to_iso_string(datetime.utcnow())
                     all_tickets.append(data)
         
         # Write all tickets back

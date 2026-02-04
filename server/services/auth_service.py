@@ -9,6 +9,7 @@ from uuid import UUID
 
 from core.database import SessionLocal, AdminUser, AdminAuditLog
 from core.config import JWT_SECRET, JWT_ALGORITHM, JWT_EXPIRATION_HOURS
+from utils.datetime_utils import to_iso_string
 from utils.exceptions import ValidationError, UnauthorizedError, ConflictError
 from utils.validators import validate_password_strength, validate_email, validate_full_name
 from core.logger import get_logger
@@ -166,7 +167,7 @@ class AuthService:
                 "role": admin.role,
                 "is_active": admin.is_active,
                 "company_id": str(admin.company_id) if admin.company_id else None,
-                "created_at": admin.created_at.isoformat()
+                "created_at": to_iso_string(admin.created_at)
             }
             
             logger.info(f"✓ Admin user created: {email}")

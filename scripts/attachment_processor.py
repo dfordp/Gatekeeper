@@ -35,6 +35,8 @@ from typing import Optional, List
 from datetime import datetime
 import uuid
 
+from utils.datetime_utils import to_iso_string
+
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -529,7 +531,7 @@ TESTED CONFIGURATIONS:
                 "type": attachment.type,
                 "file_path": attachment.file_path,
                 "mime_type": attachment.mime_type,
-                "created_at": attachment.created_at.isoformat(),
+                "created_at": to_iso_string(attachment.created_at),
                 "total_embeddings": len(embeddings),
                 "active_embeddings": active_count,
                 "inactive_embeddings": inactive_count
