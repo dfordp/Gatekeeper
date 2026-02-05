@@ -76,7 +76,7 @@ export default function TicketTimeline({ events }: TicketTimelineProps) {
                     System
                   </p>
                   <p className="text-xs text-gray-500">
-                    {new Date(event.created_at).toLocaleString()}
+                    {event.created_at}
                   </p>
                 </div>
                 <p className="text-sm text-gray-600 mb-2">

@@ -5,7 +5,7 @@ from datetime import datetime
 from uuid import UUID
 
 from core.database import SessionLocal, Ticket, IncidentReport, IREvent, User
-from utils.datetime_utils import to_iso_string
+from utils.datetime_utils import to_iso_date
 from utils.exceptions import ValidationError, NotFoundError
 from core.logger import get_logger
 
@@ -108,13 +108,13 @@ class IRService:
             ir.vendor_status = vendor_status
             ir.vendor_notes = vendor_notes
             ir.notes = notes or ir.notes
-            ir.last_vendor_update = datetime.utcnow()
+            ir.last_vendor_update = datetime.today()
             ir.updated_by_user_id = UUID(updated_by_user_id) if updated_by_user_id else ir.created_by_user_id
             
             # If status is resolved/closed, mark IR as closed
             if status in ["resolved", "closed"]:
-                ir.resolved_at = datetime.utcnow()
-                ticket.ir_closed_at = datetime.utcnow()            
+                ir.resolved_at = datetime.today()
+                ticket.ir_closed_at = datetime.today()            
             db.flush()
             
             # Log IR event
@@ -144,8 +144,8 @@ class IRService:
                 "vendor": ir.vendor,
                 "vendor_status": ir.vendor_status,
                 "notes": ir.notes,
-                "last_vendor_update": to_iso_string(ir.last_vendor_update) if ir.last_vendor_update else None,
-                "updated_at": to_iso_string(ir.updated_at)
+                "last_vendor_update": to_iso_date(ir.last_vendor_update) if ir.last_vendor_update else None,
+                "updated_at": to_iso_date(ir.updated_at)
             }
             
         except (ValidationError, NotFoundError):
@@ -183,7 +183,7 @@ class IRService:
             
             ir.status = "closed"
             ir.notes = resolution_notes or ir.notes
-            ir.resolved_at = resolved_at if resolved_at else datetime.utcnow()  # Use provided date or current time
+            ir.resolved_at = resolved_at if resolved_at else datetime.today()  # Use provided date or current time
             ir.updated_by_user_id = UUID(closed_by_user_id) if closed_by_user_id else ir.created_by_user_id
             ticket.ir_closed_at = ir.resolved_at  # Set ticket closure date to match IR
             db.flush()
@@ -197,7 +197,7 @@ class IRService:
                 new_status="closed",
                 notes=resolution_notes,
                 payload={
-                    "resolved_at": to_iso_string(ir.resolved_at)
+                    "resolved_at": to_iso_date(ir.resolved_at)
                 }
             )
             db.add(ir_event)
@@ -209,7 +209,7 @@ class IRService:
                 "id": str(ir.id),
                 "ir_number": ir.ir_number,
                 "status": ir.status,
-                "resolved_at": to_iso_string(ir.resolved_at) if ir.resolved_at else None,
+                "resolved_at": to_iso_date(ir.resolved_at) if ir.resolved_at else None,
             }
             
         except (ValidationError, NotFoundError):
@@ -243,9 +243,9 @@ class IRService:
                     "vendor": ir.vendor,
                     "status": ir.status,
                     "company_id": company_id,
-                    "raised_at": to_iso_string(ir.raised_at),
-                    "expected_resolution_date": to_iso_string(ir.expected_resolution_date) if ir.expected_resolution_date else None,
-                    "resolved_at": to_iso_string(ir.resolved_at) if ir.resolved_at else None,
+                    "raised_at": to_iso_date(ir.raised_at),
+                    "expected_resolution_date": to_iso_date(ir.expected_resolution_date) if ir.expected_resolution_date else None,
+                    "resolved_at": to_iso_date(ir.resolved_at) if ir.resolved_at else None,
                 }
                 for ir in irs
             ]
@@ -307,7 +307,7 @@ class IRService:
             ticket.has_ir = True  # Mark ticket as having an IR (open or closed)
             ticket.ir_number = ir_number.strip()
             # Use the passed ir_raised_at if provided, otherwise use current time
-            ticket.ir_raised_at = ir_raised_at if ir_raised_at else datetime.utcnow()
+            ticket.ir_raised_at = ir_raised_at if ir_raised_at else datetime.today()
             ticket.ir_expected_resolution_date = expected_resolution_date
             ticket.ir_notes = notes
             ticket.ir_closed_at = closed_at  # Track when IR was closed on ticket
@@ -319,19 +319,19 @@ class IRService:
                 event_type="ir_opened",
                 actor_user_id=UUID(created_by_user_id) if created_by_user_id else ticket.raised_by_user_id,
                 new_status=ir_status,
-                notes=f"IR opened for ticket {ticket.ticket_no}" + (f" (already closed at {to_iso_string(closed_at)})" if closed_at else ""),
+                notes=f"IR opened for ticket {ticket.ticket_no}" + (f" (already closed at {to_iso_date(closed_at)})" if closed_at else ""),
                 payload={
                     "ir_number": ir_number,
                     "vendor": vendor,
-                    "expected_resolution_date": to_iso_string(expected_resolution_date) if expected_resolution_date else None,
-                    "ir_raised_at": to_iso_string(ir_raised_at) if ir_raised_at else None,
-                    "resolved_at": to_iso_string(closed_at) if closed_at else None
+                    "expected_resolution_date": to_iso_date(expected_resolution_date) if expected_resolution_date else None,
+                    "ir_raised_at": to_iso_date(ir_raised_at) if ir_raised_at else None,
+                    "resolved_at": to_iso_date(closed_at) if closed_at else None
                 }
             )
             db.add(ir_event)
             db.commit()
             
-            status_note = f" (already closed at {to_iso_string(closed_at)})" if closed_at else ""
+            status_note = f" (already closed at {to_iso_date(closed_at)})" if closed_at else ""
             logger.info(f"✓ IR opened: {ir_number} for ticket {ticket.ticket_no}{status_note}")
             
             return {
@@ -342,9 +342,9 @@ class IRService:
                 "company_id": str(ticket.company_id),
                 "vendor": ir.vendor,
                 "status": ir.status,
-                "expected_resolution_date": to_iso_string(ir.expected_resolution_date) if ir.expected_resolution_date else None,
-                "resolved_at": to_iso_string(ir.resolved_at) if ir.resolved_at else None,
-                "created_at": to_iso_string(ir.created_at)
+                "expected_resolution_date": to_iso_date(ir.expected_resolution_date) if ir.expected_resolution_date else None,
+                "resolved_at": to_iso_date(ir.resolved_at) if ir.resolved_at else None,
+                "created_at": to_iso_date(ir.created_at)
             }
             
         except (ValidationError, NotFoundError):

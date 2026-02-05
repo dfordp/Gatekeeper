@@ -32,7 +32,6 @@ import {
   TabsTrigger,
 } from "@/components/ui/tabs"
 import { Loader2, AlertCircle, Calendar, Trash2, Plus, FileUp } from "lucide-react"
-import { toUTCISOString } from "@/lib/date-utils"
 
 interface EditTicketDialogProps {
   open: boolean
@@ -85,20 +84,14 @@ export default function EditTicketDialog({
 }: EditTicketDialogProps) {
   const { admin: currentUser } = useAuth()
 
-  const isoToDatetimeLocal = (isoString: string): string => {
-    if (!isoString) return ""
-    // Convert ISO UTC string to datetime-local format
-    // Input: "2026-01-21T04:28:00Z" or "2026-01-21T04:28:00.000Z"
-    // Create a Date object (which interprets as UTC)
-    const date = new Date(isoString)
-    // Convert to local datetime-local format
-    const year = date.getFullYear()
-    const month = String(date.getMonth() + 1).padStart(2, '0')
-    const day = String(date.getDate()).padStart(2, '0')
-    const hours = String(date.getHours()).padStart(2, '0')
-    const minutes = String(date.getMinutes()).padStart(2, '0')
-    return `${year}-${month}-${day}T${hours}:${minutes}`
+  const isoToDateOnly = (isoString: string): string => {
+  if (!isoString) return ""
+      // Extract just the date part (YYYY-MM-DD) from ISO string
+      // Input: "2026-01-21T04:28:00Z" or "2026-01-21"
+      // Output: "2026-01-21"
+      return isoString.split('T')[0]
   }
+  
 
   // Form state
   const [error, setError] = useState<string | null>(null)
@@ -126,12 +119,12 @@ export default function EditTicketDialog({
     ticket.rca?.resolution_steps?.join("\n") || ""
   )
   const [createdAt, setCreatedAt] = useState(
-    isoToDatetimeLocal(ticket.created_at)
+    isoToDateOnly(ticket.created_at)
   )
 
   const [rcaAttachments, setRcaAttachments] = useState<AttachmentFile[]>([])
   const [closedAt, setClosedAt] = useState(
-    ticket.closed_at ? isoToDatetimeLocal(ticket.closed_at) : ""
+    ticket.closed_at ? isoToDateOnly(ticket.closed_at) : ""
   )
 
   const rcaFileInputRef = useRef<HTMLInputElement>(null)
@@ -296,8 +289,8 @@ export default function EditTicketDialog({
           detailed_description: description.trim(),
           category: category || undefined,
           level: level || undefined,
-          created_at: createdAt ? (createdAt + ':00.000Z') : undefined,
-          closed_at: closedAt ? (closedAt + ':00.000Z') : undefined,
+          created_at: createdAt || undefined,
+          closed_at: closedAt || undefined,
         })
 
       // Upload ticket attachments
@@ -500,7 +493,7 @@ export default function EditTicketDialog({
                 </Label>
                 <Input
                   id="created-at"
-                  type="datetime-local"
+                  type="date"
                   value={createdAt}
                   onChange={(e) => setCreatedAt(e.target.value)}
                   disabled={isLoading}
@@ -642,7 +635,7 @@ export default function EditTicketDialog({
                   </Label>
                   <Input
                     id="closed-at"
-                    type="datetime-local"
+                    type="date"
                     value={closedAt}
                     onChange={(e) => setClosedAt(e.target.value)}
                     disabled={isLoading}

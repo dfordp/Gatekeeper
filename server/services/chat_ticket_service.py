@@ -19,7 +19,7 @@ from uuid import UUID
 from datetime import datetime
 
 from core.database import SessionLocal, User, Company, Ticket, ChatSession
-from utils.datetime_utils import to_iso_string
+from utils.datetime_utils import to_iso_date
 from .ticket_creation_service import TicketCreationService
 from .chat_search_service import ChatSearchService
 from utils.exceptions import ValidationError, NotFoundError
@@ -361,7 +361,7 @@ class ChatTicketService:
                 "ticket_id": str(ticket_result["id"]),
                 "ticket_no": created_ticket.ticket_no,
                 "status": created_ticket.status,
-                "created_at": to_iso_string(created_ticket.created_at),
+                "created_at": to_iso_date(created_ticket.created_at),
                 "subject": created_ticket.subject,
                 "inferred_category": ticket_category,
                 "message": f"Ticket {created_ticket.ticket_no} created in '{ticket_category}' category."
@@ -640,7 +640,7 @@ class ChatTicketService:
                 "status": ticket.status,
                 "subject": ticket.subject,
                 "category": ticket.category,
-                "updated_at": to_iso_string(ticket.updated_at)
+                "updated_at": to_iso_date(ticket.updated_at)
             }
         
         finally:

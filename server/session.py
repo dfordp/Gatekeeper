@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Optional
 from enum import Enum
 
-from utils.datetime_utils import to_iso_string
+from utils.datetime_utils import to_iso_date
 
 # Define all enum options as dynamic sources
 class Environment(str, Enum):
@@ -258,7 +258,7 @@ class SupportSession:
             "environment": self.environment.value if self.environment else None,
             "impact": self.impact.value if self.impact else None,
             "attachments": self.attachments,
-            "created_at": to_iso_string(self.created_at),
+            "created_at": to_iso_date(self.created_at),
         }
 
 # Global session store (in production, use Redis or database)

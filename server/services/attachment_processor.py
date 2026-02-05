@@ -35,7 +35,7 @@ import logging
 import base64
 import requests
 from typing import Optional, List
-from datetime import datetime
+from datetime import date
 from uuid import UUID
 from pathlib import Path
 from io import BytesIO
@@ -44,7 +44,7 @@ from core.database import SessionLocal, Attachment, Embedding
 from core.config import GROQ_API_KEY
 from core.logger import get_logger
 from core.config import GROQ_API_KEY, VISION_MODEL
-from utils.datetime_utils import to_iso_string
+from utils.datetime_utils import to_iso_date
 logger = get_logger(__name__)
 
 # Try to import PDF library
@@ -277,7 +277,7 @@ class AttachmentProcessor:
                     try:
                         attachment.metadata = {
                             "visual_description": visual_description[:500],
-                            "analysis_timestamp": to_iso_string(datetime.utcnow())
+                            "analysis_timestamp": to_iso_date(date.today())
                         }
                         db.commit()
                         logger.debug(f"  ✓ Stored visual analysis metadata")
@@ -320,7 +320,7 @@ class AttachmentProcessor:
                         attachment.metadata = {}
                     
                     attachment.metadata["visual_description"] = visual_description[:500]
-                    attachment.metadata["analysis_timestamp"] = to_iso_string(datetime.utcnow())
+                    attachment.metadata["analysis_timestamp"] = to_iso_date(date.today())
                     db.commit()
                     logger.debug(f"  ✓ Stored visual analysis metadata")
                 except Exception as e:
@@ -553,7 +553,7 @@ class AttachmentProcessor:
                 return True
             
             deprecation_reason = reason or "attachment_deprecated"
-            now = datetime.utcnow()
+            now = date.today()
             
             # Update PostgreSQL - mark as inactive
             for emb in embeddings:
@@ -604,7 +604,7 @@ class AttachmentProcessor:
                 return True
             
             deprecation_reason = reason or "rca_attachments_deprecated"
-            now = datetime.utcnow()
+            now = date.today()
             total_deprecated = 0
             qdrant_deleted = 0
             

@@ -9,18 +9,15 @@ Uses existing services:
 - TicketRequestQueue: Task status tracking for frontend polling
 """
 
-import logging
-import sys
-import os
 from typing import Optional, List, Dict, Any
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from uuid import UUID
 
 from core.database import (
     SessionLocal, Ticket, TicketEvent, RootCauseAnalysis, ResolutionNote,
     Attachment, AdminAuditLog, Company, User
 )
-from utils.datetime_utils import to_iso_string
+from utils.datetime_utils import to_iso_date
 from .embedding_manager import EmbeddingManager
 from .attachment_processor import AttachmentProcessor
 from .ticket_request_queue import TicketRequestQueue, TaskType, TaskStatus
@@ -130,7 +127,7 @@ class TicketCreationService:
                 raised_by_user_id=UUID(raised_by_user_id),
                 assigned_engineer_id=UUID(assigned_engineer_id) if assigned_engineer_id else None,
                 status=initial_status,
-                created_at=created_at or datetime.utcnow(),
+                created_at=created_at or date.today(),
                 attachment_ids=[]
             )
             
@@ -226,7 +223,7 @@ class TicketCreationService:
                 "company_id": str(ticket.company_id),
                 "raised_by_user_id": str(ticket.raised_by_user_id),
                 "assigned_engineer_id": str(ticket.assigned_engineer_id) if ticket.assigned_engineer_id else None,
-                "created_at": to_iso_string(ticket.created_at)
+                "created_at": to_iso_date(ticket.created_at)
             }
             
         except (ValidationError, NotFoundError, ConflictError):
@@ -368,7 +365,7 @@ class TicketCreationService:
                 "mime_type": attachment.mime_type,
                 "embeddings_created": embedding_count,
                 "task_id": task_id,
-                "created_at": to_iso_string(attachment.created_at)
+                "created_at": to_iso_date(attachment.created_at)
             }
             
         except (NotFoundError, ValidationError):
@@ -654,7 +651,7 @@ class TicketCreationService:
                 "related_ticket_ids": rca.related_ticket_ids,
                 "ticket_closed_at": ticket_closed_at,
                 "task_id": task_id,
-                "created_at": to_iso_string(rca.created_at),
+                "created_at": to_iso_date(rca.created_at),
                 "is_update": is_update
             }
                     
@@ -774,7 +771,7 @@ class TicketCreationService:
                 "steps_taken": note.steps_taken,
                 "resources_used": note.resources_used,
                 "follow_up_notes": note.follow_up_notes,
-                "created_at": to_iso_string(note.created_at),
+                "created_at": to_iso_date(note.created_at),
                 "is_update": is_update
             }
             
@@ -843,7 +840,7 @@ class TicketCreationService:
                 payload={
                     "ticket_no": ticket.ticket_no,
                     "subject": ticket.subject,
-                    "deleted_at": to_iso_string(datetime.utcnow())
+                    "deleted_at": to_iso_date(date.today())
                 }
             )
             db.add(deletion_event)
@@ -896,7 +893,7 @@ class TicketCreationService:
                 "id": ticket_id,
                 "ticket_no": ticket.ticket_no,
                 "deleted": True,
-                "deleted_at": to_iso_string(datetime.utcnow())
+                "deleted_at": to_iso_date(date.today())
             }
             
         except NotFoundError:
@@ -959,7 +956,7 @@ class TicketCreationService:
             
             if closed_at is not None:  # ADD THIS BLOCK
                 ticket.closed_at = closed_at
-            ticket.updated_at = datetime.utcnow()
+            ticket.updated_at = date.today()
             db.flush()
             
             # Create update event
@@ -975,7 +972,7 @@ class TicketCreationService:
             if level is not None:
                 changes["level"] = level
             if created_at is not None:  
-                changes["created_at"] = to_iso_string(created_at)
+                changes["created_at"] = to_iso_date(created_at)
             
             ticket_event = TicketEvent(
                 ticket_id=ticket_uuid,
@@ -983,7 +980,7 @@ class TicketCreationService:
                 actor_user_id=ticket.raised_by_user_id,
                 payload={
                     "changes": changes,
-                    "updated_at": to_iso_string(datetime.utcnow())
+                    "updated_at": to_iso_date(date.today())
                 }
             )
             db.add(ticket_event)

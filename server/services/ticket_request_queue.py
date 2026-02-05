@@ -19,7 +19,7 @@ from datetime import datetime
 from enum import Enum
 from uuid import UUID, uuid4
 
-from utils.datetime_utils import to_iso_string
+from utils.datetime_utils import to_iso_date
 from sqlalchemy.orm import Session
 from core.database import SessionLocal
 from core.logger import get_logger
@@ -79,9 +79,9 @@ class QueuedTaskModel:
             "retry_count": self.retry_count,
             "max_retries": self.max_retries,
             "error_message": self.error_message,
-            "created_at": to_iso_string(self.created_at),
-            "started_at": to_iso_string(self.started_at) if self.started_at else None,
-            "completed_at": to_iso_string(self.completed_at) if self.completed_at else None
+            "created_at": to_iso_date(self.created_at),
+            "started_at": to_iso_date(self.started_at) if self.started_at else None,
+            "completed_at": to_iso_date(self.completed_at) if self.completed_at else None
         }
 
 

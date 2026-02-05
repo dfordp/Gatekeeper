@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
-from utils.datetime_utils import parse_iso_datetime
+from utils.datetime_utils import parse_iso_date
 from services.ir_service import IRService
 from services.embedding_manager import EmbeddingManager
 from utils.exceptions import ValidationError, NotFoundError
@@ -18,7 +18,7 @@ class OpenIRRequest(BaseModel):
     """Request model for opening an Incident Report"""
     ir_number: str
     vendor: Optional[str] = "siemens"
-    expected_resolution_date: Optional[datetime] = None
+    expected_resolution_date: Optional[str] = None
     ir_raised_at: Optional[str] = None  # NEW: ISO string format
     closed_at: Optional[str] = None  # NEW: ISO string format
     notes: Optional[str] = None
@@ -51,23 +51,33 @@ async def open_ir(
         ir_raised_at = None
         if request_data.ir_raised_at:
             try:
-                ir_raised_at = parse_iso_datetime(request_data.ir_raised_at)
+                ir_raised_at = parse_iso_date(request_data.ir_raised_at)
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=f"Invalid ir_raised_at date: {str(e)}")
+        
+        # Parse expected_resolution_date
+        expected_resolution_date = None
+        if request_data.expected_resolution_date:
+            try:
+                expected_resolution_date = parse_iso_date(request_data.expected_resolution_date)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=f"Invalid expected_resolution_date: {str(e)}")
         
         closed_at = None
         if request_data.closed_at:
             try:
-                closed_at = parse_iso_datetime(request_data.closed_at)
+                closed_at = parse_iso_date(request_data.closed_at)
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=f"Invalid closed_at date: {str(e)}")
+        
+        # Remove the duplicate closed_at parsing block here
         
         result = IRService.open_ir(
             ticket_id=ticket_id,
             ir_number=request_data.ir_number,
             vendor=request_data.vendor,
-            expected_resolution_date=request_data.expected_resolution_date,
-            ir_raised_at=ir_raised_at,  # Make sure this is passed
+            expected_resolution_date=expected_resolution_date,  # Use parsed date
+            ir_raised_at=ir_raised_at,
             notes=request_data.notes,
             closed_at=closed_at,
             created_by_user_id=request_data.created_by_user_id
@@ -104,7 +114,7 @@ async def close_ir(
         resolved_at = None
         if hasattr(request_data, 'closed_at') and request_data.closed_at:
             try:
-                resolved_at = parse_iso_datetime(request_data.closed_at)
+                resolved_at = parse_iso_date(request_data.closed_at)
             except ValueError as e:
                 logger.warning(f"Failed to parse closed_at date: {e}")
         

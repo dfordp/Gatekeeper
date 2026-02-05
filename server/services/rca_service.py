@@ -9,13 +9,13 @@ import logging
 import os
 from typing import Optional, List, Dict, Any
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, date
 
 from core.database import (
     SessionLocal, Ticket, RootCauseAnalysis, User, RCAAttachment,
     TicketEvent, AdminAuditLog
 )
-from utils.datetime_utils import to_iso_string
+from utils.datetime_utils import to_iso_date
 from .embedding_manager import EmbeddingManager
 from .attachment_processor import AttachmentProcessor
 from utils.exceptions import ValidationError, NotFoundError
@@ -82,7 +82,7 @@ class RCAService:
                 existing_rca.contributing_factors = contributing_factors or []
                 existing_rca.prevention_measures = prevention_measures.strip() if prevention_measures else None
                 existing_rca.resolution_steps = resolution_steps or []
-                existing_rca.updated_at = datetime.utcnow()
+                existing_rca.updated_at = date.today()
 
                 AttachmentProcessor.deprecate_rca_attachments(
                     rca_id=str(existing_rca.id),
@@ -225,7 +225,7 @@ class RCAService:
                     "id": str(att.id),
                     "file_path": att.file_path,
                     "type": att.type,
-                    "created_at": to_iso_string(att.created_at) if att.created_at else None
+                    "created_at": to_iso_date(att.created_at) if att.created_at else None
                 }
                 for att in attachments
             ]
@@ -239,8 +239,8 @@ class RCAService:
                 "resolution_steps": rca.resolution_steps,
                 "attachments": attachment_list,
                 "created_by": rca.created_by_user.name if rca.created_by_user else None,
-                "created_at": to_iso_string(rca.created_at) if rca.created_at else None,
-                "updated_at": to_iso_string(rca.updated_at) if rca.updated_at else None
+                "created_at": to_iso_date(rca.created_at) if rca.created_at else None,
+                "updated_at": to_iso_date(rca.updated_at) if rca.updated_at else None
             }
         except ValueError:
             return None
@@ -336,7 +336,7 @@ class RCAService:
                     "ticket_no": rca.ticket.ticket_no if rca.ticket else None,
                     "root_cause": rca.root_cause_description[:150],
                     "attachment_count": len(rca.attachments or []),
-                    "created_at": to_iso_string(rca.created_at) if rca.created_at else None
+                    "created_at": to_iso_date(rca.created_at) if rca.created_at else None
                 }
                 for rca in rcas
             ]

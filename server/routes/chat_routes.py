@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, Request, HTTPException, Depends
-from utils.datetime_utils import to_iso_string
+from utils.datetime_utils import to_iso_date
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -39,7 +39,7 @@ chat_search_service = ChatSearchService()
 
 
 @router.post("/webhook")
-@invalidate_on_mutation(tags=["chat:sessions", "ticket:list", "search:*"])
+@invalidate_on_mutation(tags=["chat:sessions", "ticket:list"])
 async def handle_telegram_webhook(request: Request, db: Session = Depends(get_db)):
     """
     Handle incoming Telegram messages.
@@ -561,9 +561,9 @@ async def get_chat_session(
             "telegram_chat_id": chat_session.telegram_chat_id,
             "is_active": chat_session.is_active,
             "session_state": chat_session.session_state,
-            "created_at": to_iso_string(chat_session.created_at),
-            "last_message_at": to_iso_string(chat_session.last_message_at),
-            "closed_at": to_iso_string(chat_session.closed_at) if chat_session.closed_at else None
+            "created_at": to_iso_date(chat_session.created_at),
+            "last_message_at": to_iso_date(chat_session.last_message_at),
+            "closed_at": to_iso_date(chat_session.closed_at) if chat_session.closed_at else None
         }
     
     except ValueError:
@@ -636,7 +636,7 @@ async def record_search_feedback(
             payload={
                 "similarity_score": similarity_score,
                 "rating": rating,
-                "timestamp": to_iso_string(datetime.utcnow())
+                "timestamp": to_iso_date(datetime.utcnow())
             }
         )
         db.add(event)
@@ -850,7 +850,7 @@ async def init_chat_session(
             user_id=UUID(user_id),
             company_id=user.company_id,
             telegram_chat_id=str(telegram_chat_id),
-            session_state={"initialized_by_admin": admin_payload.get("id"), "initialized_at": to_iso_string(datetime.utcnow())}
+            session_state={"initialized_by_admin": admin_payload.get("id"), "initialized_at": to_iso_date(datetime.utcnow())}
         )
         
         db.add(chat_session)
@@ -901,8 +901,8 @@ async def list_chat_sessions(
                     "company": s.user.company.name,
                     "telegram_chat_id": s.telegram_chat_id,
                     "is_active": s.is_active,
-                    "created_at": to_iso_string(s.created_at),
-                    "last_message_at": to_iso_string(s.last_message_at)
+                    "created_at": to_iso_date(s.created_at),
+                    "last_message_at": to_iso_date(s.last_message_at)
                 }
                 for s in sessions
             ]

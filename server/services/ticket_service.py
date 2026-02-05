@@ -3,13 +3,13 @@
 
 import logging
 from typing import Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from uuid import UUID
 
 from core.database import SessionLocal, Ticket, TicketEvent, AdminAuditLog, User
 from utils.exceptions import ValidationError, NotFoundError, ConflictError
 from core.logger import get_logger
-from utils.datetime_utils import serialize_datetime_fields, to_iso_string
+from utils.datetime_utils import serialize_date_fields, to_iso_date
 logger = get_logger(__name__)
 
 
@@ -152,17 +152,17 @@ class TicketService:
             } if ticket.assigned_engineer else None,
             "assigned_to": ticket.assigned_engineer.name if ticket.assigned_engineer else None,
             "assigned_to_id": str(ticket.assigned_engineer_id) if ticket.assigned_engineer_id else None,
-            "created_at": to_iso_string(ticket.created_at),
-            "updated_at": to_iso_string(ticket.updated_at),
-            "closed_at": to_iso_string(ticket.closed_at)if ticket.closed_at else None,
-            "reopened_at": to_iso_string(ticket.reopened_at) if ticket.reopened_at else None,
+            "created_at": to_iso_date(ticket.created_at),
+            "updated_at": to_iso_date(ticket.updated_at),
+            "closed_at": to_iso_date(ticket.closed_at)if ticket.closed_at else None,
+            "reopened_at": to_iso_date(ticket.reopened_at) if ticket.reopened_at else None,
             "attachments": [
                 {
                     "id": str(att.id),
                     "type": att.type,
                     "file_path": att.file_path,
                     "mime_type": att.mime_type,
-                    "created_at": to_iso_string(att.created_at)
+                    "created_at": to_iso_date(att.created_at)
                 }
                 for att in ticket.attachments
             ] if ticket.attachments else [],
@@ -179,12 +179,12 @@ class TicketService:
                         "type": att.type,
                         "file_path": att.file_path,
                         "mime_type": att.mime_type,
-                        "created_at": to_iso_string(att.created_at)
+                        "created_at": to_iso_date(att.created_at)
                     }
                     for att in ticket.root_cause_analysis.attachments
                 ] if ticket.root_cause_analysis.attachments else [],
-                "created_at": to_iso_string(ticket.root_cause_analysis.created_at),
-                "updated_at": to_iso_string(ticket.root_cause_analysis.updated_at)
+                "created_at": to_iso_date(ticket.root_cause_analysis.created_at),
+                "updated_at": to_iso_date(ticket.root_cause_analysis.updated_at)
             } if ticket.root_cause_analysis else None,
             "resolution_note": {
                 "id": str(ticket.resolution_note.id),
@@ -192,8 +192,8 @@ class TicketService:
                 "steps_taken": ticket.resolution_note.steps_taken or [],
                 "resources_used": ticket.resolution_note.resources_used or [],
                 "follow_up_notes": ticket.resolution_note.follow_up_notes,
-                "created_at": to_iso_string(ticket.resolution_note.created_at),
-                "updated_at": to_iso_string(ticket.resolution_note.updated_at)
+                "created_at": to_iso_date(ticket.resolution_note.created_at),
+                "updated_at": to_iso_date(ticket.resolution_note.updated_at)
             } if ticket.resolution_note else None,
             "events": [
                 {
@@ -202,18 +202,18 @@ class TicketService:
                     "actor_user_id": str(event.actor_user_id),
                     "actor": event.actor_user.name if event.actor_user else None,
                     "payload": event.payload,
-                    "created_at": to_iso_string(event.created_at)
+                    "created_at": to_iso_date(event.created_at)
                 }
                 for event in ticket.events
             ] if ticket.events else [],
             "has_ir": ticket.has_ir or False,
             "ir_number": ticket.ir_number,
-            "ir_raised_at": to_iso_string(ticket.ir_raised_at) if ticket.ir_raised_at else None,
-            "ir_expected_resolution_date": to_iso_string(ticket.ir_expected_resolution_date) if ticket.ir_expected_resolution_date else None,
+            "ir_raised_at": to_iso_date(ticket.ir_raised_at) if ticket.ir_raised_at else None,
+            "ir_expected_resolution_date": to_iso_date(ticket.ir_expected_resolution_date) if ticket.ir_expected_resolution_date else None,
             "ir_notes": ticket.ir_notes,
-            "ir_closed_at": to_iso_string(ticket.ir_closed_at) if ticket.ir_closed_at else None,
+            "ir_closed_at": to_iso_date(ticket.ir_closed_at) if ticket.ir_closed_at else None,
         }
-        return serialize_datetime_fields(response)
+        return serialize_date_fields(response)
     
     @staticmethod
     def update_ticket_status(
@@ -240,12 +240,12 @@ class TicketService:
             
             # Update status
             ticket.status = new_status
-            ticket.updated_at = datetime.utcnow()
+            ticket.updated_at = date.today()
             
             if new_status == "closed":
-                ticket.closed_at = datetime.utcnow()
+                ticket.closed_at = date.today()
             elif new_status == "reopened":
-                ticket.reopened_at = datetime.utcnow()
+                ticket.reopened_at = date.today()
             
             db.flush()
             
@@ -267,7 +267,7 @@ class TicketService:
                 payload={
                     "old_status": old_status,
                     "new_status": new_status,
-                    "changed_at": to_iso_string(datetime.utcnow())
+                    "changed_at": to_iso_date(date.today())
                 }
             )
             db.add(status_event)
@@ -343,7 +343,7 @@ class TicketService:
             
             # Update assignment
             ticket.assigned_engineer_id = engineer_uuid
-            ticket.updated_at = datetime.utcnow()
+            ticket.updated_at = date.today()
             db.flush()
             
             # Verify user for event logging
@@ -370,7 +370,7 @@ class TicketService:
                     "assigned_to": engineer.name,
                     "assigned_to_id": engineer_id,
                     "previous_assignment": None,
-                    "assigned_at": to_iso_string(datetime.utcnow())
+                    "assigned_at": to_iso_date(date.today())
                 }
             )
             db.add(assignment_event)
@@ -428,11 +428,9 @@ class TicketService:
             - resolution_rate: Percentage of resolved tickets
         """
         db = SessionLocal()
-        try:
-            from datetime import timedelta
-            
+        try:            
             # Calculate date range
-            now = datetime.utcnow()
+            now = date.today()
             start_date = now - timedelta(days=days)
             
             logger.info(f"Getting analytics for last {days} days (from {start_date} to {now})")
@@ -525,21 +523,17 @@ class TicketService:
             
             # Ticket trends (daily count for last N days)
             trends = []
-            current_date = start_date.date()
-            end_date = now.date()
-            
+            current_date = start_date  # Already a date object from timedelta operation
+            end_date = now  # Already a date object from date.today()
+
             while current_date <= end_date:
-                day_start = datetime.combine(current_date, datetime.min.time())
-                day_end = datetime.combine(current_date, datetime.max.time())
-                
                 daily_count = query.filter(
-                    Ticket.created_at >= day_start,
-                    Ticket.created_at <= day_end
+                    Ticket.created_at == current_date
                 ).count()
                 
                 if daily_count > 0:
                     trends.append({
-                        "date": to_iso_string(current_date),
+                        "date": to_iso_date(current_date),
                         "count": daily_count
                     })
                 

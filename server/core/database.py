@@ -2,14 +2,14 @@
 """Database configuration, models, and session management"""
 import logging
 from sqlalchemy import (
-    create_engine, text, Column, String, Text, DateTime, Boolean, 
+    create_engine, text, Column, String, Text, DateTime, Date, Boolean, 
     Integer, ForeignKey, UUID, CheckConstraint, Index
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, date
 import uuid
 
 from .config import DATABASE_URL
@@ -32,7 +32,7 @@ class Company(Base):
     
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(255), nullable=False, unique=True)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(Date, nullable=False, default=date.today)
     
     users = relationship("User", back_populates="company", cascade="all, delete-orphan")
     tickets = relationship("Ticket", back_populates="company", cascade="all, delete-orphan")
@@ -53,7 +53,7 @@ class User(Base):
     phone_number = Column(String(20), nullable=True)
     role = Column(String(50), nullable=False)
     company_id = Column(UUID(as_uuid=True), ForeignKey("company.id"), nullable=False)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(Date, nullable=False, default=date.today)
     
     company = relationship("Company", back_populates="users")
     tickets_raised = relationship("Ticket", foreign_keys="Ticket.raised_by_user_id", back_populates="raised_by_user")
@@ -87,19 +87,19 @@ class Ticket(Base):
     company_id = Column(UUID(as_uuid=True), ForeignKey("company.id"), nullable=False, index=True)
     raised_by_user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=False)
     assigned_engineer_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=True)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
-    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    closed_at = Column(DateTime, nullable=True)
-    reopened_at = Column(DateTime, nullable=True)
+    created_at = Column(Date, nullable=False, default=date.today, index=True)
+    updated_at = Column(Date, nullable=False, default=date.today)
+    closed_at = Column(Date, nullable=True)
+    reopened_at = Column(Date, nullable=True)
     attachment_ids = Column(JSONB, nullable=True, default=[])
     
     # IR (Incident Report) Tracking
     has_ir = Column(Boolean, nullable=False, default=False, index=True)  # Is IR open?
     ir_number = Column(String(100), nullable=True, unique=True)  # Siemens IR number
-    ir_raised_at = Column(DateTime, nullable=True)  # When IR was opened
-    ir_expected_resolution_date = Column(DateTime, nullable=True)  # Expected resolution from Siemens
+    ir_raised_at = Column(Date, nullable=True)  # When IR was opened
+    ir_expected_resolution_date = Column(Date, nullable=True)  # Expected resolution from Siemens
     ir_notes = Column(Text, nullable=True)  # Notes about the IR (status, updates, etc.)
-    ir_closed_at = Column(DateTime, nullable=True)  # When IR was closed/resolved
+    ir_closed_at = Column(Date, nullable=True)  # When IR was closed/resolved
     
     company = relationship("Company", back_populates="tickets")
     raised_by_user = relationship("User", foreign_keys=[raised_by_user_id], back_populates="tickets_raised")
@@ -132,20 +132,20 @@ class IncidentReport(Base):
     ir_number = Column(String(100), nullable=False, unique=True, index=True)
     vendor = Column(String(100), nullable=False, default="siemens")  # siemens, other vendors
     status = Column(String(50), nullable=False, default="open")  # open, in_progress, resolved, closed
-    raised_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    expected_resolution_date = Column(DateTime, nullable=True)
-    resolved_at = Column(DateTime, nullable=True)
+    raised_at = Column(Date, nullable=False, default=date.today)
+    expected_resolution_date = Column(Date, nullable=True)
+    resolved_at = Column(Date, nullable=True)
     notes = Column(Text, nullable=True)
     
     # Track updates from vendor
-    last_vendor_update = Column(DateTime, nullable=True)
+    last_vendor_update = Column(Date, nullable=True)
     vendor_status = Column(String(100), nullable=True)  # Status from vendor
     vendor_notes = Column(Text, nullable=True)  # Notes from vendor
     
     created_by_user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=False)
     updated_by_user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=True)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(Date, nullable=False, default=date.today)
+    updated_at = Column(Date, nullable=False, default=date.today)
     
     ticket = relationship("Ticket", foreign_keys=[ticket_id])
     created_by_user = relationship("User", foreign_keys=[created_by_user_id])
@@ -224,7 +224,7 @@ class Attachment(Base):
     type = Column(String(50), nullable=False)
     file_path = Column(String(1000), nullable=False)
     mime_type = Column(String(100), nullable=True)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(Date, nullable=False, default=date.today)
     
     ticket = relationship("Ticket", back_populates="attachments")
     events = relationship("AttachmentEvent", back_populates="attachment", cascade="all, delete-orphan")
@@ -278,8 +278,8 @@ class RootCauseAnalysis(Base):
     resolution_steps = Column(JSONB, nullable=True, default=[])
     related_ticket_ids = Column(JSONB, nullable=True, default=[])
     created_by_user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=False)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
-    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(Date, nullable=False, default=date.today, index=True)
+    updated_at = Column(Date, nullable=False, default=date.today)
     
     ticket = relationship("Ticket", foreign_keys=[ticket_id], back_populates="root_cause_analysis")
     created_by_user = relationship("User", foreign_keys=[created_by_user_id], back_populates="root_cause_analyses")
@@ -302,7 +302,7 @@ class RCAAttachment(Base):
     type = Column(String(50), nullable=False)
     file_path = Column(String(1000), nullable=False)
     mime_type = Column(String(100), nullable=True)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(Date, nullable=False, default=date.today)
     
     rca = relationship("RootCauseAnalysis", foreign_keys=[rca_id], back_populates="attachments")
     embeddings = relationship("Embedding", back_populates="rca_attachment")
@@ -329,8 +329,8 @@ class ResolutionNote(Base):
     resources_used = Column(JSONB, nullable=True, default=[])
     follow_up_notes = Column(Text, nullable=True)
     created_by_user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=False)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
-    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(Date, nullable=False, default=date.today, index=True)
+    updated_at = Column(Date, nullable=False, default=date.today)
     
     ticket = relationship("Ticket", foreign_keys=[ticket_id], back_populates="resolution_note")
     created_by_user = relationship("User", foreign_keys=[created_by_user_id], back_populates="resolution_notes")
@@ -358,8 +358,8 @@ class Embedding(Base):
     text_content = Column(Text, nullable=False)
     vector_id = Column(String(100), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True, index=True)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    deprecated_at = Column(DateTime, nullable=True)
+    created_at = Column(Date, nullable=False, default=date.today)
+    deprecated_at = Column(Date, nullable=True)
     deprecation_reason = Column(String(100), nullable=True)
     
     company = relationship("Company", back_populates="embeddings")
@@ -414,9 +414,9 @@ class AdminUser(Base):
     role = Column(String(50), nullable=False)
     is_active = Column(Boolean, default=True, index=True)
     company_id = Column(UUID(as_uuid=True), ForeignKey("company.id"), nullable=True)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
-    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    last_login = Column(DateTime, nullable=True)
+    created_at = Column(Date, nullable=False, default=date.today, index=True)
+    updated_at = Column(Date, nullable=False, default=date.today)
+    last_login = Column(Date, nullable=True)
     
     company = relationship("Company", back_populates="admin_users")
     audit_logs = relationship("AdminAuditLog", back_populates="admin_user", cascade="all, delete-orphan")
@@ -487,9 +487,9 @@ class ChatSession(Base):
     telegram_chat_id = Column(String(100), nullable=True, unique=True, index=True)  # Now nullable - can be None initially
     session_state = Column(JSONB, nullable=True, default={})
     is_active = Column(Boolean, nullable=False, default=True, index=True)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
-    last_message_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    closed_at = Column(DateTime, nullable=True)
+    created_at = Column(Date, nullable=False, default=date.today, index=True)
+    last_message_at = Column(Date, nullable=False, default=date.today)
+    closed_at = Column(Date, nullable=True)
     
     user = relationship("User", foreign_keys=[user_id])
     company = relationship("Company", foreign_keys=[company_id])
@@ -518,9 +518,9 @@ class ChatAttachment(Base):
     mime_type = Column(String(100), nullable=True)
     cloudinary_url = Column(String(1000), nullable=True)  # Set when uploaded to Cloudinary
     file_size = Column(Integer, nullable=True)  # Size in bytes
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    uploaded_at = Column(DateTime, nullable=True)  # When moved to Cloudinary
-    expires_at = Column(DateTime, nullable=False)  # Auto-delete if not confirmed
+    created_at = Column(Date, nullable=False, default=date.today)
+    uploaded_at = Column(Date, nullable=True)  # When moved to Cloudinary
+    expires_at = Column(Date, nullable=False)  # Auto-delete if not confirmed
     
     chat_session = relationship("ChatSession", back_populates="attachments")
     

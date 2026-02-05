@@ -5,7 +5,7 @@ import json
 import sys
 from datetime import datetime
 
-from utils.datetime_utils import to_iso_string
+from utils.datetime_utils import to_iso_date
 
 
 class JSONFormatter(logging.Formatter):
@@ -14,7 +14,7 @@ class JSONFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         """Format log record as JSON"""
         log_data = {
-            "timestamp": to_iso_string(datetime.utcnow()),
+            "timestamp": to_iso_date(datetime.utcnow()),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),

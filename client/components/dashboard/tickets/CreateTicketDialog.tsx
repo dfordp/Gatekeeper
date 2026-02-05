@@ -29,8 +29,7 @@ import {
 } from "@/components/ui/select"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Loader2, Plus, AlertCircle, Calendar, Building2, Trash2, FileUp, X } from "lucide-react"
-import { toUTCISOString } from "@/lib/date-utils"
-
+import { toISODateString } from "@/lib/date-utils"
 interface CreateTicketDialogProps {
   currentUserId: string
   onTicketCreated: () => void
@@ -340,7 +339,6 @@ export default function CreateTicketDialog({
     try {
       setLoading(true)
 
-      // Create ticket request
       const createRequest: CreateTicketRequest = {
         subject: subject.trim(),
         detailed_description: description.trim(),
@@ -350,16 +348,14 @@ export default function CreateTicketDialog({
         category: category || undefined,
         level: level || undefined,
         assigned_engineer_id: assignedEngineer || undefined,
-        created_at: isOlderTicket && createdAt 
-          ? toUTCISOString(new Date(createdAt))
-          : undefined,
+        created_at: isOlderTicket && createdAt ? createdAt : undefined,
         ticket_no: ticketNo || undefined,
         status: isOlderTicket && status ? status : undefined,
-        closed_at:
-          isOlderTicket && status === "closed" && closedAt
-            ? toUTCISOString(new Date(closedAt))
-            : undefined,
+        closed_at: isOlderTicket && status === "closed" && closedAt ? closedAt : undefined,
       }
+
+      // Debug log to verify
+      console.log(`Ticket creation - isOlderTicket: ${isOlderTicket}, status: ${status}, closedAt: "${closedAt}", will send closed_at: ${createRequest.closed_at}`)
 
       // Create the ticket
       const createdTicket = await ticketService.createTicket(createRequest)
@@ -484,7 +480,7 @@ export default function CreateTicketDialog({
               .map((s) => s.trim())
               .filter((s) => s.length > 0)
           : undefined,
-        ticket_closed_at: closedAt ? toUTCISOString(new Date(closedAt)) : null,
+        ticket_closed_at: closedAt ? closedAt : null,
       }
       await ticketService.createRCA(ticketId, rcaRequest)
       console.log("✓ RCA added successfully")
@@ -506,11 +502,9 @@ export default function CreateTicketDialog({
         ir_number: irNumber.trim(),
         vendor: irVendor || "siemens",
         expected_resolution_date: irExpectedResolutionDate 
-          ? toUTCISOString(new Date(irExpectedResolutionDate))
-          : undefined,
+          ?irExpectedResolutionDate: undefined,
         closed_at: irClosedAt
-          ? toUTCISOString(new Date(irClosedAt))
-          : undefined,
+          ? irClosedAt : undefined,
         notes: irNotes.trim() || undefined,
         created_by_user_id: raisedByUserId,
       }
@@ -913,7 +907,7 @@ export default function CreateTicketDialog({
                     </Label>
                     <Input
                       id="created-at"
-                      type="datetime-local"
+                      type="date"
                       value={createdAt}
                       onChange={(e) => setCreatedAt(e.target.value)}
                       disabled={loading}
@@ -1005,7 +999,7 @@ export default function CreateTicketDialog({
                         <Label htmlFor="ir-raised-at">IR Raised Date</Label>
                         <Input
                           id="ir-raised-at"
-                          type="datetime-local"
+                          type="date"
                           value={irRaisedAt}
                           onChange={(e) => setIrRaisedAt(e.target.value)}
                           disabled={loading}
@@ -1013,10 +1007,10 @@ export default function CreateTicketDialog({
                       </div>
 
                       <div className="space-y-2">
-                        <Label htmlFor="ir-expected-resolution">Expected daResolution Date</Label>
+                        <Label htmlFor="ir-expected-resolution">Expected Resolution Date</Label>
                         <Input
                           id="ir-expected-resolution"
-                          type="datetime-local"
+                          type="date"
                           value={irExpectedResolutionDate}
                           onChange={(e) => setIrExpectedResolutionDate(e.target.value)}
                           disabled={loading}
@@ -1040,7 +1034,7 @@ export default function CreateTicketDialog({
                         <Label htmlFor="ir-closed-at">IR Closed Date (if already resolved)</Label>
                         <Input
                           id="ir-closed-at"
-                          type="datetime-local"
+                          type="date"
                           value={irClosedAt}
                           onChange={(e) => setIrClosedAt(e.target.value)}
                           disabled={loading}
@@ -1067,7 +1061,7 @@ export default function CreateTicketDialog({
                   </Label>
                   <Input
                     id="closed-at"
-                    type="datetime-local"
+                    type="date"
                     value={closedAt}
                     onChange={(e) => setClosedAt(e.target.value)}
                     disabled={loading}

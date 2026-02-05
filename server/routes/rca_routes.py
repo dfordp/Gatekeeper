@@ -29,7 +29,7 @@ router = APIRouter(prefix="/api/rca", tags=["RCA"])
 
 
 @router.post("/tickets/{ticket_id}/rca")
-@invalidate_on_mutation(tags=["ticket:rca", "ticket:detail", "search:*"])
+@invalidate_on_mutation(tags=["ticket:rca", "ticket:detail"])
 async def create_rca(
     ticket_id: str,
     request: CreateRCARequest

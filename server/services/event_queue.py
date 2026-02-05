@@ -44,7 +44,7 @@ import logging
 import json
 import threading
 from typing import Dict, Callable, Any, Optional
-from datetime import datetime
+from datetime import date
 from enum import Enum
 import select
 import psycopg2
@@ -52,7 +52,7 @@ import psycopg2.extensions
 from dotenv import load_dotenv
 
 from core.database import SessionLocal
-from utils.datetime_utils import to_iso_string
+from utils.datetime_utils import to_iso_date
 
 load_dotenv()
 
@@ -127,7 +127,7 @@ class EventQueue:
                 return False
             
             # Add timestamp
-            data["timestamp"] = to_iso_string(datetime.utcnow())
+            data["timestamp"] = to_iso_date(date.today())
             data["event_type"] = event_type.value
             
             payload = json.dumps(data)

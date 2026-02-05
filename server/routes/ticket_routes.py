@@ -22,7 +22,7 @@ from services.ticket_request_queue import TicketRequestQueue
 from utils.exceptions import ValidationError, NotFoundError, ConflictError
 from core.logger import get_logger
 from middleware.cache_decorator import cache_endpoint, invalidate_on_mutation
-from utils.datetime_utils import parse_iso_datetime, serialize_datetime_fields
+from utils.datetime_utils import parse_iso_date, serialize_date_fields
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/tickets", tags=["Tickets"])
@@ -41,10 +41,9 @@ class CreateTicketRequest(BaseModel):
     level: Optional[str] = Field(None, description="Priority level (level-1, level-2, level-3)")
     assigned_engineer_id: Optional[str] = Field(None, description="Engineer UUID to assign")
     created_at: Optional[str] = Field(None, description="ISO format date for older tickets")
+    closed_at: Optional[str] = Field(None, description="ISO format closed date (only for closed older tickets)")
     ticket_no: Optional[str] = Field(None, description="Custom ticket number (auto-generated if not provided)")
     status: Optional[str] = Field(None, description="Initial status (open, in_progress, resolved, closed, reopened)")
-
-
 class AddAttachmentRequest(BaseModel):
     """Request model for adding attachment"""
     file_path: str = Field(..., description="File path or URL")
@@ -91,7 +90,7 @@ class UpdateTicketRequest(BaseModel):
 # ==================== ENDPOINTS ====================
 
 @router.post("/create")
-@invalidate_on_mutation(tags=["ticket:list", "analytics", "search:*"])
+@invalidate_on_mutation(tags=["ticket:list", "analytics"])
 async def create_ticket(
     request: CreateTicketRequest,
     admin_payload: dict = Depends(get_current_admin)
@@ -113,9 +112,16 @@ async def create_ticket(
         created_at = None
         if request.created_at:        
             try:
-                created_at = parse_iso_datetime(request.created_at)
+                created_at = parse_iso_date(request.created_at)
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=f"Invalid created_at date: {str(e)}")
+        
+        closed_at = None
+        if request.closed_at:
+            try:
+                closed_at = parse_iso_date(request.closed_at)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=f"Invalid closed_at date: {str(e)}")
         
         # Create ticket (synchronous)
         result = TicketCreationService.create_ticket(
@@ -128,6 +134,7 @@ async def create_ticket(
             level=request.level,
             assigned_engineer_id=request.assigned_engineer_id,
             created_at=created_at,
+            closed_at=closed_at,
             created_by_admin_id=admin_payload.get("id"),
             ticket_no=request.ticket_no,
             status=request.status
@@ -146,7 +153,7 @@ async def create_ticket(
             logger.warning(f"Failed to get ticket status: {e}")
             result["async_tasks"] = {"error": "Failed to track async tasks"}
         
-        return serialize_datetime_fields(result)
+        return serialize_date_fields(result)
         
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -160,7 +167,7 @@ async def create_ticket(
 
 
 @router.get("/creation-status/{ticket_id}")
-@cache_endpoint(ttl=10, tag="ticket:status", key_params=["ticket_id"])
+@cache_endpoint(ttl=60, tag="ticket:status", key_params=["ticket_id"])
 async def get_ticket_creation_status(ticket_id: str):
     """
     Get the creation status of a ticket, including all async tasks (Phase 1)
@@ -199,14 +206,14 @@ async def get_ticket_creation_status(ticket_id: str):
     """
     try:
         status = TicketRequestQueue.get_ticket_status(ticket_id)
-        return serialize_datetime_fields(status)
+        return serialize_date_fields(status)
     except Exception as e:
         logger.error(f"Error getting ticket creation status: {e}")
         raise HTTPException(status_code=500, detail="Failed to get ticket status")
 
 
 @router.get("/queue-status/{task_id}")
-@cache_endpoint(ttl=10, tag="queue:status", key_params=["task_id"])
+@cache_endpoint(ttl=60, tag="queue:status", key_params=["task_id"])
 async def get_queue_task_status(task_id: str):
     """
     Get status of a specific queued task (Phase 1)
@@ -231,7 +238,7 @@ async def get_queue_task_status(task_id: str):
         task_status = TicketRequestQueue.get_task_status(task_id)
         if not task_status:
             raise HTTPException(status_code=404, detail="Task not found")
-        return serialize_datetime_fields(task_status)
+        return serialize_date_fields(task_status)
     except HTTPException:
         raise
     except Exception as e:
@@ -269,7 +276,7 @@ async def get_queue_statistics():
     """
     try:
        stats = TicketRequestQueue.get_stats()
-       return serialize_datetime_fields(stats)
+       return serialize_date_fields(stats)
     except Exception as e:
         logger.error(f"Error getting queue stats: {e}")
         raise HTTPException(status_code=500, detail="Failed to get queue statistics")
@@ -340,7 +347,7 @@ async def upload_attachment(
             admin_id=None
         )
         
-        return serialize_datetime_fields(attachment_result)
+        return serialize_date_fields(attachment_result)
         
     except NotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -375,7 +382,7 @@ async def add_attachment(
             created_by_user_id=request.created_by_user_id,
             admin_id=None
         )
-        return serialize_datetime_fields(result)
+        return serialize_date_fields(result)
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except NotFoundError as e:
@@ -386,7 +393,7 @@ async def add_attachment(
 
 
 @router.post("/{ticket_id}/rca")
-@invalidate_on_mutation(tags=["ticket:rca", "ticket:detail", "search:*"])
+@invalidate_on_mutation(tags=["ticket:rca", "ticket:detail"])
 async def add_rca(
     ticket_id: str,
     request: AddRCARequest
@@ -418,7 +425,7 @@ async def add_rca(
         
         # Service already queued and completed RCA task - don't queue again!
         logger.info(f"✓ RCA endpoint success: {result}")
-        return serialize_datetime_fields(result)
+        return serialize_date_fields(result)
         
     except ValidationError as e:
         logger.error(f"ValidationError in RCA: {e}")
@@ -449,7 +456,7 @@ async def add_resolution_note(
             follow_up_notes=request.follow_up_notes,
             admin_id=admin_payload.get("sub")
         )
-        return serialize_datetime_fields(result)
+        return serialize_date_fields(result)
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except NotFoundError as e:
@@ -462,7 +469,7 @@ async def add_resolution_note(
 
 
 @router.delete("/{ticket_id}")
-@invalidate_on_mutation(tags=["ticket:detail", "ticket:list", "search:*", "analytics"])
+@invalidate_on_mutation(tags=["ticket:detail", "ticket:list", "analytics"])
 async def delete_ticket(
     ticket_id: str,
     admin_payload: dict = Depends(get_current_admin)
@@ -473,7 +480,7 @@ async def delete_ticket(
             ticket_id=ticket_id,
             admin_id=admin_payload.get("id")
         )
-        return serialize_datetime_fields(result)
+        return serialize_date_fields(result)
     except NotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -494,14 +501,14 @@ async def update_ticket(
         created_at = None
         if request.created_at:
             try:
-                created_at = parse_iso_datetime(request.created_at)
+                created_at = parse_iso_date(request.created_at)
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=f"Invalid created_at date: {str(e)}")
         
         closed_at = None
         if request.closed_at:
             try:
-                closed_at = parse_iso_datetime(request.closed_at)
+                closed_at = parse_iso_date(request.closed_at)
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=f"Invalid closed_at date: {str(e)}")
         
@@ -516,7 +523,7 @@ async def update_ticket(
             closed_at=closed_at, 
             admin_id=admin_payload.get("id"),
         )
-        return serialize_datetime_fields(result)
+        return serialize_date_fields(result)
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except NotFoundError as e:
@@ -584,7 +591,7 @@ async def download_attachment(
 
 
 @router.delete("/{ticket_id}/attachments/{attachment_id}")
-@invalidate_on_mutation(tags=["ticket:detail", "search:*"])
+@invalidate_on_mutation(tags=["ticket:detail"])
 async def delete_attachment(
     ticket_id: str,
     attachment_id: str
@@ -597,7 +604,7 @@ async def delete_attachment(
             attachment_id=attachment_id
         )
         logger.info(f"✓ Delete successful: {result}")
-        return serialize_datetime_fields(result)
+        return serialize_date_fields(result)
     except NotFoundError as e:
         logger.warning(f"NotFound: {str(e)}")
         raise HTTPException(status_code=404, detail=str(e))
@@ -660,7 +667,7 @@ async def upload_rca_attachment(
         logger.info(f"RCA attachment upload - using: {storage_path}")
         
         # Return the file path to be used when creating/updating RCA
-        return serialize_datetime_fields({
+        return serialize_date_fields({
             "success": True,
             "file_path": storage_path,
             "file_name": result.get("file_name"),
@@ -675,7 +682,7 @@ async def upload_rca_attachment(
         raise HTTPException(status_code=500, detail=f"Failed to upload RCA attachment: {str(e)}")
 
 @router.delete("/{ticket_id}/rca-attachments/{attachment_id}")
-@invalidate_on_mutation(tags=["ticket:rca", "search:*"])
+@invalidate_on_mutation(tags=["ticket:rca"])
 async def delete_rca_attachment(
     ticket_id: str,
     attachment_id: str,
@@ -746,7 +753,7 @@ async def delete_rca_attachment(
             
             logger.info(f"✓ RCA attachment deleted: {attachment_id}")
             
-            return serialize_datetime_fields({
+            return serialize_date_fields({
                 "success": True,
                 "message": "RCA attachment deleted successfully",
                 "attachment_id": attachment_id

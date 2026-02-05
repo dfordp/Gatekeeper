@@ -5,7 +5,7 @@ from uuid import UUID
 from datetime import datetime
 
 from core.database import SessionLocal, AdminUser, AdminAuditLog
-from utils.datetime_utils import to_iso_string
+from utils.datetime_utils import to_iso_date
 from utils.exceptions import ValidationError, NotFoundError, ConflictError, UnauthorizedError
 from utils.validators import validate_email, validate_full_name
 from core.logger import get_logger
@@ -138,7 +138,7 @@ class AdminManagementService:
                 "full_name": admin.full_name,
                 "role": admin.role,
                 "is_active": admin.is_active,
-                "created_at": to_iso_string(admin.created_at),
+                "created_at": to_iso_date(admin.created_at),
                 "temporary_password": temp_password
             }
             
@@ -170,8 +170,8 @@ class AdminManagementService:
                     "full_name": admin.full_name,
                     "role": admin.role,
                     "is_active": admin.is_active,
-                    "created_at": to_iso_string(admin.created_at),
-                    "last_login": to_iso_string(admin.last_login) if admin.last_login else None
+                    "created_at": to_iso_date(admin.created_at),
+                    "last_login": to_iso_date(admin.last_login) if admin.last_login else None
                 })
             
             return {
@@ -246,8 +246,8 @@ class AdminManagementService:
                 "full_name": admin.full_name,
                 "role": admin.role,
                 "is_active": admin.is_active,
-                "created_at": to_iso_string(admin.created_at),
-                "last_login": to_iso_string(admin.last_login) if admin.last_login else None
+                "created_at": to_iso_date(admin.created_at),
+                "last_login": to_iso_date(admin.last_login) if admin.last_login else None
             }
             
         except (ValidationError, NotFoundError, UnauthorizedError):

@@ -7,7 +7,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response, JSONResponse, HTMLResponse, StreamingResponse
 
-from utils.datetime_utils import to_iso_string
+from utils.datetime_utils import to_iso_date
 from session import sessions
 from ticket import Ticket
 
@@ -93,7 +93,7 @@ def api_sessions():
             "impact": session.impact,
             "is_confirmed": session.is_confirmed,
             "ticket_id": session.ticket_id,
-            "created_at": to_iso_string(session.created_at),
+            "created_at": to_iso_date(session.created_at),
         })
     return JSONResponse(session_list)
 

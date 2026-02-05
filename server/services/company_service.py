@@ -4,7 +4,7 @@ from typing import Dict, Any, Optional, List
 from uuid import UUID
 
 from core.database import SessionLocal, Company, AdminAuditLog
-from utils.datetime_utils import to_iso_string
+from utils.datetime_utils import to_iso_date
 from utils.exceptions import ValidationError, NotFoundError, ConflictError
 from core.logger import get_logger
 
@@ -69,7 +69,7 @@ class CompanyService:
             return {
                 "id": str(company.id),
                 "name": company.name,
-                "created_at": to_iso_string(company.created_at)
+                "created_at": to_iso_date(company.created_at)
             }
             
         except (ValidationError, ConflictError):
@@ -101,7 +101,7 @@ class CompanyService:
                 {
                     "id": str(c.id),
                     "name": c.name,
-                    "created_at": to_iso_string(c.created_at),
+                    "created_at": to_iso_date(c.created_at),
                     "user_count": len(c.users),
                     "ticket_count": len(c.tickets)
                 }
@@ -138,7 +138,7 @@ class CompanyService:
             return {
                 "id": str(company.id),
                 "name": company.name,
-                "created_at": to_iso_string(company.created_at),
+                "created_at": to_iso_date(company.created_at),
                 "user_count": len(company.users),
                 "ticket_count": len(company.tickets)
             }

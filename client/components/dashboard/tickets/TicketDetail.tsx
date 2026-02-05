@@ -404,7 +404,7 @@ export default function TicketDetail({ ticketId }: TicketDetailProps) {
                       Created
                     </p>
                     <p className="text-sm text-gray-900">
-                      {new Date(ticket.created_at).toLocaleString()}
+                      {ticket.created_at}
                     </p>
                   </div>
                   <div>
@@ -412,7 +412,7 @@ export default function TicketDetail({ ticketId }: TicketDetailProps) {
                       Updated
                     </p>
                     <p className="text-sm text-gray-900">
-                      {new Date(ticket.updated_at).toLocaleString()}
+                      {ticket.updated_at}
                     </p>
                   </div>
                   {ticket.closed_at && (
@@ -421,7 +421,7 @@ export default function TicketDetail({ ticketId }: TicketDetailProps) {
                         Closed
                       </p>
                       <p className="text-sm text-gray-900">
-                        {new Date(ticket.closed_at).toLocaleString()}
+                        {ticket.closed_at}
                       </p>
                     </div>
                   )}

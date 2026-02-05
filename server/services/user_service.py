@@ -4,7 +4,7 @@ from typing import Dict, Any, Optional
 from uuid import UUID
 
 from core.database import SessionLocal, User, Company, AdminAuditLog
-from utils.datetime_utils import to_iso_string
+from utils.datetime_utils import to_iso_date
 from utils.exceptions import ValidationError, NotFoundError, ConflictError
 from core.logger import get_logger
 
@@ -96,7 +96,7 @@ class UserService:
                 "phone_number": user.phone_number,
                 "role": user.role,
                 "company_id": str(user.company_id),
-                "created_at": to_iso_string(user.created_at)
+                "created_at": to_iso_date(user.created_at)
             }
             
         except (ValidationError, ConflictError, NotFoundError):
@@ -144,7 +144,7 @@ class UserService:
                     "role": user.role,
                     "company_id": str(user.company_id),
                     "company_name": user.company.name if user.company else None,
-                    "created_at": to_iso_string(user.created_at)
+                    "created_at": to_iso_date(user.created_at)
                 })
             
             return {
@@ -177,7 +177,7 @@ class UserService:
                 "role": user.role,
                 "company_id": str(user.company_id),
                 "company_name": user.company.name if user.company else None,
-                "created_at": to_iso_string(user.created_at)
+                "created_at": to_iso_date(user.created_at)
             }
             
         except NotFoundError:
@@ -258,7 +258,7 @@ class UserService:
                 "phone_number": user.phone_number,
                 "role": user.role,
                 "company_id": str(user.company_id),
-                "created_at": to_iso_string(user.created_at)
+                "created_at": to_iso_date(user.created_at)
             }
             
         except (ValidationError, NotFoundError, ConflictError):

@@ -1,58 +1,53 @@
-// client/lib/date-utils.ts
 /**
- * Utility functions to ensure dates are always sent in UTC ISO format
+ * Date-only utility functions (no time component)
  */
 
 /**
- * Convert any date to UTC ISO string with 'Z' suffix
- * Handles both datetime-local inputs and Date objects
+ * Convert any input to ISO date string (YYYY-MM-DD)
+ * Handles both date inputs and datetime inputs
  * 
- * For datetime-local inputs (YYYY-MM-DDTHH:mm):
- * - Interprets the value as UTC (not local browser time)
- * - This matches backend expectation for datetime-local fields
- * 
- * For Date objects:
- * - Converts to ISO string (which is already UTC)
- * 
- * @param date Date object, ISO string, or datetime-local string
- * @returns ISO string like "2026-01-21T13:58:00.000Z"
+ * @param date Date object, ISO string, or date string
+ * @returns ISO date string like "2026-01-21"
  */
-export function toUTCISOString(date: Date | string): string {
+export function toISODateString(date: Date | string): string {
   if (typeof date === 'string') {
-    // Check if this is a datetime-local input (YYYY-MM-DDTHH:mm or YYYY-MM-DDTHH:mm:ss)
-    // Regex matches: YYYY-MM-DDTHH:mm or YYYY-MM-DDTHH:mm:ss (no timezone info)
-    if (date.match(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/)) {
-      // This is a datetime-local value - treat it as UTC, not local browser time
-      // Add :00.000Z to complete the ISO format
-      if (date.length === 16) {
-        // Format: YYYY-MM-DDTHH:mm
-        return date + ':00.000Z'
-      } else if (date.length === 19) {
-        // Format: YYYY-MM-DDTHH:mm:ss
-        return date + '.000Z'
-      }
+    // If it's a full ISO datetime, extract just the date part
+    if (date.includes('T')) {
+      return date.split('T')[0]
     }
+    // If it's already YYYY-MM-DD format, return as-is
+    if (date.match(/^\d{4}-\d{2}-\d{2}$/)) {
+      return date
+    }
+    // Try parsing other formats
+    const d = new Date(date)
+    return d.toISOString().split('T')[0]
   }
   
-  // For all other cases (Date objects or full ISO strings), use standard conversion
-  const d = typeof date === 'string' ? new Date(date) : date
-  return d.toISOString()
+  // For Date objects
+  return date.toISOString().split('T')[0]
 }
 
 /**
  * Parse ISO date string safely
- * @param dateStr ISO format string
- * @returns Date object
+ * @param dateStr ISO date format string (YYYY-MM-DD)
+ * @returns Date object (at midnight UTC)
  */
 export function parseISODate(dateStr: string): Date {
-  return new Date(dateStr)
+  return new Date(dateStr + 'T00:00:00Z')
 }
 
 /**
- * Validate date has timezone info
- * @param dateStr ISO format string
- * @returns true if has 'Z' or ±HH:MM
+ * Format date for display
+ * @param dateStr ISO date string (YYYY-MM-DD)
+ * @returns Localized date string
  */
-export function hasTimezoneInfo(dateStr: string): boolean {
-  return dateStr.endsWith('Z') || dateStr.includes('+') || (dateStr.match(/-/g) || []).length >= 2
+export function formatDateForDisplay(dateStr: string | undefined): string {
+  if (!dateStr) return ""
+  try {
+    const date = parseISODate(dateStr)
+    return date.toLocaleDateString()
+  } catch {
+    return ""
+  }
 }
