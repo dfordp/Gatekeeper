@@ -151,9 +151,90 @@ def create_super_admin(company_id: str, password: str) -> bool:
         db.close()
 
 
+def initialize_vector_db() -> bool:
+    """
+    Initialize Qdrant vector database with collection and payload indexes.
+    
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        from qdrant_client import QdrantClient
+        from qdrant_client.models import VectorParams, Distance
+        
+        logger.info("\n5️⃣ Initializing Qdrant vector database...")
+        
+        client = QdrantClient(
+            url="http://localhost:6333",
+            api_key="qdrant_secure_key_123",
+            timeout=30.0
+        )
+        
+        collection_name = "tickets"
+        
+        try:
+            # Check if collection exists
+            collection = client.get_collection(collection_name)
+            logger.info(f"✓ Qdrant collection '{collection_name}' already exists")
+            
+        except Exception as e:
+            error_str = str(e).lower()
+            if "not found" in error_str or "doesn't exist" in error_str:
+                # Create collection
+                logger.info(f"Creating Qdrant collection '{collection_name}'...")
+                client.create_collection(
+                    collection_name=collection_name,
+                    vectors_config=VectorParams(
+                        size=1536,  # OpenAI embedding dimension
+                        distance=Distance.COSINE
+                    )
+                )
+                logger.info(f"✓ Created Qdrant collection '{collection_name}'")
+            else:
+                logger.warning(f"Could not check collection: {e}")
+                return False
+        
+        # Add payload indexes for filtering
+        logger.info("Adding payload indexes for filtering...")
+        fields_to_index = [
+            "company_id",
+            "is_active", 
+            "source_type",
+            "ticket_id"
+        ]
+        
+        for field in fields_to_index:
+            try:
+                client.create_payload_index(
+                    collection_name=collection_name,
+                    field_name=field,
+                    field_schema="keyword"
+                )
+                logger.debug(f"  ✓ Created index for '{field}'")
+            except Exception as e:
+                error_str = str(e).lower()
+                if "already exists" in error_str:
+                    logger.debug(f"  ✓ Index for '{field}' already exists")
+                else:
+                    logger.warning(f"  Could not create index for '{field}': {e}")
+        
+        logger.info("✓ Vector database initialized with payload indexes")
+        return True
+        
+    except ImportError:
+        logger.warning("⚠️  Qdrant client not installed, skipping vector DB initialization")
+        logger.warning("   Install with: pip install qdrant-client")
+        return True  # Don't fail, just warn
+        
+    except Exception as e:
+        logger.error(f"Failed to initialize vector database: {e}")
+        logger.warning("⚠️  Vector database initialization failed - your app may still work without it")
+        return True  # Don't fail completely, just warn
+
+
 def initialize_database() -> bool:
     """
-    Initialize database with tables, company, and super admin.
+    Initialize database with tables, company, super admin, and vector DB.
     
     Returns:
         True if successful, False otherwise
@@ -191,6 +272,10 @@ def initialize_database() -> bool:
     if not create_super_admin(company_id, generated_password):
         logger.error("❌ Failed to create super admin")
         return False
+    
+    # Initialize vector database
+    if not initialize_vector_db():
+        logger.warning("⚠️  Vector database initialization incomplete - continuing anyway...")
     
     # Display credentials
     print("\n" + "=" * 70)

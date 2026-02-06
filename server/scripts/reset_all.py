@@ -137,7 +137,7 @@ def verify_qdrant_collection() -> bool:
         True if successful, False otherwise
     """
     try:
-        from qdrant_client.models import VectorParams, Distance
+        from qdrant_client.models import VectorParams, Distance, PayloadSchemaType, PayloadIndexInfo
         
         logger.info("Verifying Qdrant collection...")
         client = get_qdrant_client()
@@ -153,11 +153,26 @@ def verify_qdrant_collection() -> bool:
                 # Create collection
                 logger.info(f"Creating Qdrant collection '{QDRANT_COLLECTION}'...")
                 client.create_collection(
-                    collection_name=QDRANT_COLLECTION,
+                    collection_name=EmbeddingManager.QDRANT_COLLECTION,
                     vectors_config=VectorParams(
-                        size=1536,
+                        size=EmbeddingManager.VECTOR_SIZE,
                         distance=Distance.COSINE
-                    )
+                    ),
+                    payload_schema={
+                        "company_id": PayloadIndexInfo(
+                            type=PayloadSchemaType.KEYWORD,
+                            index_type=None  # or IndexType.EXACT for keyword search
+                        ),
+                        "is_active": PayloadIndexInfo(
+                            type=PayloadSchemaType.KEYWORD
+                        ),
+                        "source_type": PayloadIndexInfo(
+                            type=PayloadSchemaType.KEYWORD
+                        ),
+                        "ticket_id": PayloadIndexInfo(
+                            type=PayloadSchemaType.KEYWORD
+                        )
+                    }
                 )
                 logger.info("✓ Collection created")
                 return True

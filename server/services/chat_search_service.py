@@ -170,6 +170,7 @@ class ChatSearchService:
         
         finally:
             db.close()
+            
     def debug_search(
         self,
         query: str,
