@@ -111,11 +111,31 @@ class RCAService:
             if rca_attachment_paths:
                 logger.info(f"Adding {len(rca_attachment_paths)} attachments to RCA")
                 for path in rca_attachment_paths:
+                    # Detect MIME type from file extension
+                    import mimetypes
+                    mime_type, _ = mimetypes.guess_type(path)
+                    
+                    # Detect attachment type from MIME or file extension
+                    attachment_type = "document"
+                    if mime_type:
+                        if mime_type.startswith('image/'):
+                            attachment_type = "image"
+                        elif mime_type.startswith('video/'):
+                            attachment_type = "video"
+                        elif mime_type.startswith('application/pdf'):
+                            attachment_type = "document"
+                    elif path.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')):
+                        attachment_type = "image"
+                        mime_type = "image/jpeg"  # Default
+                    elif path.lower().endswith(('.mp4', '.webm', '.mov')):
+                        attachment_type = "video"
+                        mime_type = "video/mp4"  # Default
+                    
                     rca_att = RCAAttachment(
                         rca_id=rca.id,
-                        type="document",  # Could be enhanced to detect type
+                        type=attachment_type,
                         file_path=path,
-                        mime_type=None  # Could be enhanced to detect mime type
+                        mime_type=mime_type or "application/octet-stream"  # Fallback
                     )
                     db.add(rca_att)
             

@@ -5,7 +5,7 @@ from typing import Optional
 from pydantic import BaseModel, EmailStr
 
 from middleware.auth_middleware import get_current_admin
-from services.admin_service import AdminManagementService
+from services.async_admin_service import AsyncAdminService
 from utils.exceptions import ValidationError, NotFoundError, ConflictError, UnauthorizedError
 from core.logger import get_logger
 
@@ -37,7 +37,7 @@ async def create_admin(
     Only admins with role 'admin' can create other admins.
     """
     try:
-        result = AdminManagementService.create_admin(
+        result = await AsyncAdminService.create_admin(
             email=req.email,
             full_name=req.full_name,
             role=req.role,
@@ -65,7 +65,7 @@ async def get_admins(
         if admin_payload.get("role") != "admin":
             raise HTTPException(status_code=403, detail="Only admins can view other admins")
         
-        result = AdminManagementService.get_admins(limit=limit, offset=offset)
+        result = await AsyncAdminService.get_admins(limit=limit, offset=offset)
         return result
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=e.message)
@@ -82,7 +82,7 @@ async def update_admin(
 ):
     """Update admin details (admin access only)"""
     try:
-        result = AdminManagementService.update_admin(
+        result = await AsyncAdminService.update_admin(
             admin_id=admin_id,
             full_name=req.full_name,
             role=req.role,
@@ -111,7 +111,7 @@ async def delete_admin(
         raise HTTPException(status_code=401, detail="Invalid token - missing admin ID")
     
     try:
-        AdminManagementService.delete_admin(
+        await AsyncAdminService.delete_admin(
             admin_id=admin_id,
             deleted_by_admin_id=admin_user_id
         )

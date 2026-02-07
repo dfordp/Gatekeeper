@@ -1,6 +1,6 @@
 # server/routes/chat_routes.py
 """
-Chat Routes - Telegram webhook handler with cache decorators
+Chat Routes - Telegram webhook handler with cache decorators (ASYNC)
 
 Endpoints:
 - POST /api/chat/webhook - Telegram message webhook
@@ -17,18 +17,19 @@ from uuid import UUID
 
 from fastapi import APIRouter, Request, HTTPException, Depends
 from utils.datetime_utils import to_iso_date
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from sqlalchemy.orm.attributes import flag_modified
 
-from core.database import (
-    get_db, ChatSession, User, Company, Ticket, ChatAttachment, TicketEvent
-)
+from core.async_database import get_async_db
+from core.database import ChatSession, User, Company, Ticket, ChatAttachment, TicketEvent
 from core.config import TELEGRAM_BOT_TOKEN, TELEGRAM_API
 from middleware.cache_decorator import cache_endpoint, invalidate_on_mutation
 from services.chat_ticket_service import ChatTicketService
 from services.chat_search_service import ChatSearchService
 from utils.exceptions import ValidationError
 from middleware.auth_middleware import get_current_admin
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -40,14 +41,13 @@ chat_search_service = ChatSearchService()
 
 @router.post("/webhook")
 @invalidate_on_mutation(tags=["chat:sessions", "ticket:list"])
-async def handle_telegram_webhook(request: Request, db: Session = Depends(get_db)):
+async def handle_telegram_webhook(request: Request, db: AsyncSession = Depends(get_async_db)):
     """
     Handle incoming Telegram messages.
     """
     try:
         body = await request.json()
         logger.info(f"Received webhook from Telegram user: {body.get('message', {}).get('from', {}).get('id')}")
-        
         
         # Extract Telegram update
         message = body.get("message", {})
@@ -66,9 +66,12 @@ async def handle_telegram_webhook(request: Request, db: Session = Depends(get_db
             return {"status": "ok"}
         
         # Find chat session by telegram_chat_id
-        chat_session = db.query(ChatSession).filter(
-            ChatSession.telegram_chat_id == str(chat_id)
-        ).first()
+        result = await db.execute(
+            select(ChatSession).where(
+                ChatSession.telegram_chat_id == str(chat_id)
+            )
+        )
+        chat_session = result.scalars().first()
         
         if not chat_session:
             logger.warning(f"ChatSession not found for telegram_chat_id={chat_id}")
@@ -143,7 +146,7 @@ async def handle_telegram_webhook(request: Request, db: Session = Depends(get_db
         else:
             logger.warning("No response generated from message handler")
         
-        db.commit()
+        await db.commit()
         return {"status": "ok"}
     
     except Exception as e:
@@ -154,7 +157,7 @@ async def handle_telegram_webhook(request: Request, db: Session = Depends(get_db
 async def _handle_text_message(
     text: str,
     chat_session: ChatSession,
-    db: Session
+    db: AsyncSession
 ) -> Optional[str]:
     """Handle text messages with stateful confirmation flow"""
     
@@ -192,7 +195,7 @@ async def _handle_text_message(
                     chat_session.session_state["pending_issue"] = None
                     chat_session.session_state["pending_analysis"] = None
                     flag_modified(chat_session, "session_state")
-                    db.commit()
+                    await db.commit()
                     
                     logger.info(f"✓ Ticket created successfully: {ticket_result.get('ticket_no')}")
                     return (
@@ -205,7 +208,7 @@ async def _handle_text_message(
                     logger.error(f"Error creating ticket: {e}", exc_info=True)
                     chat_session.session_state["waiting_for_confirmation"] = False
                     flag_modified(chat_session, "session_state")
-                    db.commit()
+                    await db.commit()
                     return f"❌ Failed to create ticket: {str(e)}"
             
             elif response_lower in ["no", "n", "cancel", "skip"]:
@@ -215,7 +218,7 @@ async def _handle_text_message(
                 chat_session.session_state["pending_issue"] = None
                 chat_session.session_state["pending_analysis"] = None
                 flag_modified(chat_session, "session_state")
-                db.commit()
+                await db.commit()
                 return "✓ Cancelled. Send another message to get started."
             
             else:
@@ -267,7 +270,7 @@ async def _handle_text_message(
                 chat_session.session_state["pending_issue"] = text
                 chat_session.session_state["pending_analysis"] = analysis
                 flag_modified(chat_session, "session_state")
-                db.commit()
+                await db.commit()
                 
                 # Build response with analysis and solutions
                 inferred_category = analysis.get("inferred_category", "other")
@@ -331,7 +334,7 @@ async def _handle_photo_message(
     photo: list,
     chat_session: ChatSession,
     message: Dict,
-    db: Session
+    db: AsyncSession
 ) -> Optional[str]:
     """Handle photo messages from Telegram with stateful confirmation"""
     
@@ -361,7 +364,7 @@ async def _handle_photo_message(
             expires_at=expires_at
         )
         db.add(chat_attachment)
-        db.commit()
+        await db.commit()
         
         logger.info(f"Photo stored: {file_path}")
         
@@ -389,7 +392,7 @@ async def _handle_photo_message(
                 chat_session.session_state["pending_analysis"] = analysis
                 chat_session.session_state["pending_attachment_id"] = str(chat_attachment.id)
                 flag_modified(chat_session, "session_state")
-                db.commit()
+                await db.commit()
                 
                 # Build response with analysis and solutions
                 inferred_category = analysis.get("inferred_category", "other")
@@ -431,12 +434,13 @@ async def _handle_photo_message(
     except Exception as e:
         logger.error(f"Error handling photo message: {e}")
         return "❌ Error processing photo. Please try again."
-    
+
+
 async def _handle_document_message(
     document: dict,
     chat_session: ChatSession,
     message: Dict,
-    db: Session
+    db: AsyncSession
 ) -> Optional[str]:
     """Handle document messages from Telegram with stateful confirmation"""
     
@@ -465,7 +469,7 @@ async def _handle_document_message(
             expires_at=expires_at
         )
         db.add(chat_attachment)
-        db.commit()
+        await db.commit()
         
         logger.info(f"Document stored: {file_path}")
         
@@ -493,7 +497,7 @@ async def _handle_document_message(
                 chat_session.session_state["pending_analysis"] = analysis
                 chat_session.session_state["pending_attachment_id"] = str(chat_attachment.id)
                 flag_modified(chat_session, "session_state")
-                db.commit()
+                await db.commit()
                 
                 # Build response with analysis and solutions
                 inferred_category = analysis.get("inferred_category", "other")
@@ -542,14 +546,17 @@ async def _handle_document_message(
 @cache_endpoint(ttl=300, tag="chat:session", key_params=["session_id"])
 async def get_chat_session(
     session_id: str,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ) -> Dict[str, Any]:
     """Get chat session details"""
     
     try:
-        chat_session = db.query(ChatSession).filter(
-            ChatSession.id == UUID(session_id)
-        ).first()
+        result = await db.execute(
+            select(ChatSession).where(
+                ChatSession.id == UUID(session_id)
+            )
+        )
+        chat_session = result.scalars().first()
         
         if not chat_session:
             raise HTTPException(status_code=404, detail="Session not found")
@@ -577,7 +584,7 @@ async def search_solutions(
     company_id: str,
     limit: int = 5,
     min_similarity: float = 0.55,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ) -> Dict[str, Any]:
     """
     Search for solutions (non-webhook endpoint for testing).
@@ -586,7 +593,11 @@ async def search_solutions(
     """
     
     try:
-        company = db.query(Company).filter(Company.id == UUID(company_id)).first()
+        result = await db.execute(
+            select(Company).where(Company.id == UUID(company_id))
+        )
+        company = result.scalars().first()
+        
         if not company:
             raise HTTPException(status_code=404, detail="Company not found")
         
@@ -614,7 +625,7 @@ async def record_search_feedback(
     similarity_score: float,
     was_helpful: bool,
     rating: Optional[int] = None,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ) -> Dict[str, str]:
     """
     Record user feedback about search results.
@@ -624,7 +635,11 @@ async def record_search_feedback(
     """
     
     try:
-        ticket = db.query(Ticket).filter(Ticket.id == UUID(ticket_id)).first()
+        result = await db.execute(
+            select(Ticket).where(Ticket.id == UUID(ticket_id))
+        )
+        ticket = result.scalars().first()
+        
         if not ticket:
             raise HTTPException(status_code=404, detail="Ticket not found")
         
@@ -640,7 +655,7 @@ async def record_search_feedback(
             }
         )
         db.add(event)
-        db.commit()
+        await db.commit()
         
         logger.info(
             f"Recorded feedback: ticket={ticket.ticket_no}, "
@@ -724,7 +739,6 @@ async def _send_telegram_message(chat_id: int, text: str) -> bool:
                 json={
                     "chat_id": chat_id,
                     "text": text,
-
                 },
                 timeout=10.0
             )
@@ -789,14 +803,15 @@ async def _download_telegram_file(file_id: str) -> Optional[str]:
     except Exception as e:
         logger.error(f"Error downloading Telegram file: {e}")
         return None
-    
+
+
 @router.post("/init")
 @invalidate_on_mutation(tags=["chat:sessions"])
 async def init_chat_session(
     user_id: str,
     telegram_chat_id: str,
-    admin_payload: dict = Depends(get_current_admin),  # Only admins can create sessions
-    db: Session = Depends(get_db)
+    admin_payload: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_async_db)
 ) -> Dict[str, Any]:
     """
     Create a chat session for a user.
@@ -816,20 +831,27 @@ async def init_chat_session(
     """
     try:
         # Get the user
-        user = db.query(User).filter(User.id == UUID(user_id)).first()
+        user_result = await db.execute(
+            select(User).where(User.id == UUID(user_id))
+        )
+        user = user_result.scalars().first()
+        
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
         
         # Check if session already exists for this user
-        existing = db.query(ChatSession).filter(
-            ChatSession.user_id == UUID(user_id)
-        ).first()
+        existing_result = await db.execute(
+            select(ChatSession).where(
+                ChatSession.user_id == UUID(user_id)
+            )
+        )
+        existing = existing_result.scalars().first()
         
         if existing:
             # Session exists - update telegram_chat_id if different
             old_telegram_id = existing.telegram_chat_id
             existing.telegram_chat_id = str(telegram_chat_id)
-            db.commit()
+            await db.commit()
             
             logger.info(
                 f"✓ Chat session updated by admin: user={user.email}, "
@@ -854,7 +876,7 @@ async def init_chat_session(
         )
         
         db.add(chat_session)
-        db.commit()
+        await db.commit()
         
         logger.info(
             f"✓ Chat session created by admin: user={user.email}, "
@@ -882,7 +904,7 @@ async def init_chat_session(
 @cache_endpoint(ttl=300, tag="chat:sessions")
 async def list_chat_sessions(
     admin_payload: dict = Depends(get_current_admin),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ) -> Dict[str, Any]:
     """
     List all chat sessions (admin only).
@@ -890,7 +912,8 @@ async def list_chat_sessions(
     Used to manage user chat access from admin dashboard.
     """
     try:
-        sessions = db.query(ChatSession).all()
+        result = await db.execute(select(ChatSession))
+        sessions = result.scalars().all()
         
         return {
             "total": len(sessions),
@@ -917,7 +940,7 @@ async def list_chat_sessions(
 async def delete_chat_session(
     session_id: str,
     admin_payload: dict = Depends(get_current_admin),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ) -> Dict[str, str]:
     """
     Delete a chat session (admin only).
@@ -925,9 +948,12 @@ async def delete_chat_session(
     Permanently removes the chat session and all associated attachments.
     """
     try:
-        session = db.query(ChatSession).filter(
-            ChatSession.id == UUID(session_id)
-        ).first()
+        result = await db.execute(
+            select(ChatSession).where(
+                ChatSession.id == UUID(session_id)
+            )
+        )
+        session = result.scalars().first()
         
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
@@ -935,16 +961,19 @@ async def delete_chat_session(
         user_email = session.user.email
         
         # Delete associated attachments first
-        attachments = db.query(ChatAttachment).filter(
-            ChatAttachment.chat_session_id == UUID(session_id)
-        ).all()
+        attachments_result = await db.execute(
+            select(ChatAttachment).where(
+                ChatAttachment.chat_session_id == UUID(session_id)
+            )
+        )
+        attachments = attachments_result.scalars().all()
         
         for attachment in attachments:
             db.delete(attachment)
         
         # Delete the session
         db.delete(session)
-        db.commit()
+        await db.commit()
         
         logger.info(f"Chat session deleted by admin: user={user_email}")
         
@@ -956,16 +985,16 @@ async def delete_chat_session(
     
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid session ID")
-    
+
+
 @router.post("/debug-search")
 async def debug_search_endpoint(
     query: str,
     company_id: str,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ) -> Dict[str, Any]:
     """Debug endpoint to test search without threshold filtering"""
     try:
-        import json
         debug_result = chat_search_service.debug_search(
             query=query,
             company_id=UUID(company_id),

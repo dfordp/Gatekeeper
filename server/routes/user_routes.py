@@ -5,7 +5,7 @@ from typing import Optional
 from pydantic import BaseModel, EmailStr
 
 from middleware.auth_middleware import get_current_admin
-from services.user_service import UserService
+from services.async_user_service import AsyncUserService
 from utils.exceptions import ValidationError, NotFoundError, ConflictError
 from core.logger import get_logger
 from middleware.cache_decorator import cache_endpoint, invalidate_on_mutation
@@ -44,7 +44,7 @@ async def create_user(
 ):
     """Create a new user"""
     try:
-        result = UserService.create_user(
+        result = await AsyncUserService.create_user(
             name=req.name,
             email=req.email,
             company_id=req.company_id,
@@ -71,7 +71,7 @@ async def get_users(
 ):
     """Get list of users"""
     try:
-        result = UserService.get_users(
+        result = await AsyncUserService.get_users(
             company_id=company_id,
             role=role,
             limit=limit,
@@ -93,7 +93,7 @@ async def get_user(
 ):
     """Get user by ID"""
     try:
-        result = UserService.get_user_by_id(user_id)
+        result = await AsyncUserService.get_user_by_id(user_id)
         return result
     except NotFoundError as e:
         raise HTTPException(status_code=404, detail=e.message)
@@ -113,7 +113,7 @@ async def update_user(
 ):
     """Update user details"""
     try:
-        result = UserService.update_user(
+        result = await AsyncUserService.update_user(
             user_id=user_id,
             name=req.name,
             email=req.email,
@@ -145,7 +145,7 @@ async def delete_user(
         raise HTTPException(status_code=401, detail="Invalid token - missing admin ID")
     
     try:
-        UserService.delete_user(user_id, admin_id=admin_user_id)
+        await AsyncUserService.delete_user(user_id, admin_id=admin_user_id)
         return {"message": "User deleted successfully"}
     except NotFoundError as e:
         raise HTTPException(status_code=404, detail=e.message)

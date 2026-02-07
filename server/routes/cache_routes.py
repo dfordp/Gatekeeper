@@ -1,179 +1,168 @@
 # server/routes/cache_routes.py
 """
-Cache management endpoints for admin dashboard
-
-Provides endpoints to monitor, manage, and control the caching layer.
+Cache monitoring and management endpoints
+Provides visibility into cache performance and allows manual invalidation
 """
 
-from fastapi import APIRouter, Depends, HTTPException
-from typing import Dict, Any, Optional
+from fastapi import APIRouter, Depends, HTTPException, Query
+from uuid import UUID
 
-from middleware.auth_middleware import get_current_admin
-from utils.datetime_utils import to_iso_date
-from services.redis_cache_service import get_cache
-from core.cache_config import get_invalidation_tags
 from core.logger import get_logger
+from services.redis_cache_service import get_cache
+from middleware.auth_middleware import get_current_admin
 
 logger = get_logger(__name__)
+router = APIRouter(prefix="/api/cache", tags=["cache"])
 
-router = APIRouter(prefix="/api/cache", tags=["Cache Management"])
 
-
-@router.get("/metrics")
-async def get_cache_metrics(admin_payload: dict = Depends(get_current_admin)) -> Dict[str, Any]:
+@router.get("/metrics", summary="Get cache metrics")
+async def get_cache_metrics(
+    auth_header: str = Depends(get_current_admin)
+) -> dict:
     """
-    Get cache metrics (hit rate, memory, etc.)
+    Get cache performance metrics
     
-    Only accessible by admin users.
+    Returns:
+        - hits: Total cache hits
+        - misses: Total cache misses
+        - hit_rate_percent: Cache hit rate percentage
+        - sets: Total cache sets
+        - deletes: Total cache deletes
+        - tag_invalidations: Total tag invalidations
+        - errors: Total cache errors
     """
-    try:
-        cache = await get_cache()
-        
-        metrics = await cache.get_metrics()
-        info = await cache.get_info()
-        
-        return {
-            "metrics": metrics,
-            "server": info,
-            "timestamp": to_iso_date(datetime.utcnow())
-        }
-    except Exception as e:
-        logger.error(f"Failed to get cache metrics: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.delete("/clear")
-async def clear_cache(admin_payload: dict = Depends(get_current_admin)) -> Dict[str, Any]:
-    """
-    Clear entire cache (use with caution!)
+    cache = await get_cache()
+    metrics = await cache.get_metrics()
     
-    Only accessible by admin users.
-    """
-    try:
-        cache = await get_cache()
-        success = await cache.clear_all()
-        
-        if success:
-            logger.warning(f"Admin {admin_payload.get('email')} cleared entire cache")
-            return {
-                "status": "success",
-                "message": "Cache cleared successfully"
-            }
-        else:
-            raise HTTPException(status_code=500, detail="Failed to clear cache")
-            
-    except Exception as e:
-        logger.error(f"Failed to clear cache: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "status": "success",
+        "cache_enabled": cache.enabled,
+        "metrics": metrics
+    }
 
 
-@router.post("/invalidate-tag")
-async def invalidate_cache_tag(
-    tag: str,
-    admin_payload: dict = Depends(get_current_admin)
-) -> Dict[str, Any]:
+@router.get("/info", summary="Get cache server info")
+async def get_cache_info(
+    auth_header: str = Depends(get_current_admin)
+) -> dict:
     """
-    Invalidate cache by tag
+    Get Redis server information
     
-    Args:
-        tag: Cache tag to invalidate (e.g., "ticket:list")
-        
-    Only accessible by admin users.
+    Returns:
+        - connected: Connection status
+        - memory_used: Current memory usage
+        - memory_peak: Peak memory usage
+        - clients: Connected clients
+        - commands_processed: Total commands processed
+        - uptime_seconds: Redis uptime
     """
-    try:
-        cache = await get_cache()
-        count = await cache.invalidate_by_tag(tag)
-        
-        logger.info(f"Admin {admin_payload.get('email')} invalidated tag '{tag}': {count} keys removed")
-        
-        return {
-            "status": "success",
-            "tag": tag,
-            "keys_removed": count
-        }
-        
-    except Exception as e:
-        logger.error(f"Failed to invalidate tag '{tag}': {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/invalidate-pattern")
-async def invalidate_cache_pattern(
-    pattern: str,
-    admin_payload: dict = Depends(get_current_admin)
-) -> Dict[str, Any]:
-    """
-    Invalidate cache by key pattern
+    cache = await get_cache()
+    info = await cache.get_info()
     
-    Args:
-        pattern: Key pattern to invalidate (e.g., "ticket:list:*")
-        
-    Only accessible by admin users.
-    """
-    try:
-        cache = await get_cache()
-        count = await cache.invalidate_by_pattern(pattern)
-        
-        logger.info(f"Admin {admin_payload.get('email')} invalidated pattern '{pattern}': {count} keys removed")
-        
-        return {
-            "status": "success",
-            "pattern": pattern,
-            "keys_removed": count
-        }
-        
-    except Exception as e:
-        logger.error(f"Failed to invalidate pattern '{pattern}': {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "status": "success",
+        "info": info
+    }
 
 
-@router.post("/invalidate-event")
-async def invalidate_on_event(
-    event_type: str,
-    admin_payload: dict = Depends(get_current_admin),
-    **kwargs
-) -> Dict[str, Any]:
+@router.post("/invalidate-tag", summary="Invalidate cache by tag")
+async def invalidate_by_tag(
+    tag: str = Query(..., description="Tag to invalidate (e.g., 'ticket:list')"),
+    auth_header: str = Depends(get_current_admin)
+) -> dict:
     """
-    Manually trigger invalidation for an event
+    Manually invalidate all keys with a given tag
     
-    Args:
-        event_type: Event type (e.g., "ticket:create", "rca:update")
-        **kwargs: Event context variables
-        
-    Only accessible by admin users.
+    Parameters:
+        - tag: Tag name (supports pattern matching with *)
     """
-    try:
-        from core.cache_config import INVALIDATION_RULES
-        
-        if event_type not in INVALIDATION_RULES:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unknown event type: {event_type}"
-            )
-        
-        cache = await get_cache()
-        tags = get_invalidation_tags(event_type, **kwargs)
-        
-        total_removed = 0
-        for tag in tags:
-            if "*" in tag:
-                count = await cache.invalidate_by_pattern(tag)
-            else:
-                count = await cache.invalidate_by_tag(tag)
-            total_removed += count
-        
-        logger.info(f"Admin {admin_payload.get('email')} triggered invalidation for event '{event_type}': {total_removed} keys removed")
-        
-        return {
-            "status": "success",
-            "event_type": event_type,
-            "tags": tags,
-            "total_keys_removed": total_removed
-        }
-        
-    except Exception as e:
-        logger.error(f"Failed to process event invalidation: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    cache = await get_cache()
+    
+    if not cache.enabled:
+        raise HTTPException(status_code=400, detail="Cache is disabled")
+    
+    # Check for auth (admin only)
+    # In production, verify this is an admin user
+    
+    keys_invalidated = await cache.invalidate_by_tag(tag)
+    
+    return {
+        "status": "success",
+        "tag": tag,
+        "keys_invalidated": keys_invalidated
+    }
 
 
-from datetime import datetime
+@router.post("/invalidate-pattern", summary="Invalidate cache by pattern")
+async def invalidate_by_pattern(
+    pattern: str = Query(..., description="Pattern to match (e.g., 'ticket:*')"),
+    auth_header: str = Depends(get_current_admin)
+) -> dict:
+    """
+    Manually invalidate all keys matching a pattern
+    
+    Parameters:
+        - pattern: Pattern to match (supports * wildcard)
+    """
+    cache = await get_cache()
+    
+    if not cache.enabled:
+        raise HTTPException(status_code=400, detail="Cache is disabled")
+    
+    keys_invalidated = await cache.invalidate_by_pattern(pattern)
+    
+    return {
+        "status": "success",
+        "pattern": pattern,
+        "keys_invalidated": keys_invalidated
+    }
+
+
+@router.post("/clear", summary="Clear entire cache")
+async def clear_cache(
+    confirm: str = Query(..., description="Must be 'yes' to confirm"),
+    auth_header: str = Depends(get_current_admin)
+) -> dict:
+    """
+    Clear entire cache (use with caution)
+    
+    Parameters:
+        - confirm: Must be 'yes' to confirm
+    """
+    if confirm != "yes":
+        raise HTTPException(
+            status_code=400,
+            detail="Must pass confirm=yes to clear cache"
+        )
+    
+    cache = await get_cache()
+    
+    if not cache.enabled:
+        raise HTTPException(status_code=400, detail="Cache is disabled")
+    
+    success = await cache.clear_all()
+    
+    return {
+        "status": "success" if success else "failed",
+        "action": "cache_clear"
+    }
+
+
+@router.get("/hit-rate", summary="Get cache hit rate")
+async def get_hit_rate(
+    auth_header: str = Depends(get_current_admin)
+) -> dict:
+    """Get current cache hit rate percentage"""
+    cache = await get_cache()
+    hit_rate = cache.get_hit_rate()
+    
+    return {
+        "status": "success",
+        "hit_rate_percent": round(hit_rate, 2),
+        "interpretation": (
+            "Excellent (>80%)" if hit_rate > 80
+            else "Good (60-80%)" if hit_rate > 60
+            else "Fair (40-60%)" if hit_rate > 40
+            else "Poor (<40%)"
+        )
+    }

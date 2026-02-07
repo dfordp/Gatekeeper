@@ -14,9 +14,12 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 import sys
 import os
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from middleware.auth_middleware import get_current_admin
-from services.ticket_creation_service import TicketCreationService
+from core.async_database import get_async_db
+from services.async_ticket_creation_service import AsyncTicketCreationService
 from services.file_upload_service import FileUploadService
 from services.ticket_request_queue import TicketRequestQueue
 from utils.exceptions import ValidationError, NotFoundError, ConflictError
@@ -93,7 +96,8 @@ class UpdateTicketRequest(BaseModel):
 @invalidate_on_mutation(tags=["ticket:list", "analytics"])
 async def create_ticket(
     request: CreateTicketRequest,
-    admin_payload: dict = Depends(get_current_admin)
+    admin_payload: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_async_db)
 ):
     """
     Create a new ticket with optional older ticket support.
@@ -124,7 +128,7 @@ async def create_ticket(
                 raise HTTPException(status_code=400, detail=f"Invalid closed_at date: {str(e)}")
         
         # Create ticket (synchronous)
-        result = TicketCreationService.create_ticket(
+        result = await AsyncTicketCreationService.create_ticket(
             subject=request.subject,
             detailed_description=request.detailed_description,
             company_id=request.company_id,
@@ -285,7 +289,8 @@ async def get_queue_statistics():
 @router.post("/{ticket_id}/upload-attachment")
 async def upload_attachment(
     ticket_id: str,
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_async_db)
 ):
     """
     Upload attachment file to ticket with Phase 1 integration.
@@ -300,17 +305,14 @@ async def upload_attachment(
     File is saved locally, uploaded to Cloudinary, then deleted from local storage.
     """
     try:
-        from core.database import SessionLocal, Ticket
+        from core.database import Ticket
         from uuid import UUID
         
         # Verify ticket exists first
-        db = SessionLocal()
-        try:
-            ticket = db.query(Ticket).filter(Ticket.id == UUID(ticket_id)).first()
-            if not ticket:
-                raise NotFoundError("Ticket not found")
-        finally:
-            db.close()
+        result = await db.execute(select(Ticket).where(Ticket.id == UUID(ticket_id)))
+        ticket = result.scalars().first()
+        if not ticket:
+            raise NotFoundError("Ticket not found")
         
         # Read file content
         content = await file.read()
@@ -335,14 +337,14 @@ async def upload_attachment(
         logger.info(f"Attachment upload - cloudinary: {cloudinary_url}, local: {local_path}, using: {storage_path}")
         
         # Create attachment record with Phase 1 integration
-        attachment_result = TicketCreationService.add_attachment(
+        attachment_result = await AsyncTicketCreationService.add_attachment(
             ticket_id=ticket_id,
-            file_path=cloudinary_url,  # Store the URL we'll use for retrieval
+            file_path=cloudinary_url,
             file_name=result.get("file_name"),
-            attachment_type="document",
+            attachment_type="image" if file.content_type and file.content_type.startswith('image/') else "document",  # Detect type
             mime_type=file.content_type,
             file_size=result.get("file_size"),
-            cloudinary_url=cloudinary_url,  # Store separately for reference
+            cloudinary_url=cloudinary_url,
             created_by_user_id=None,
             admin_id=None
         )
@@ -371,14 +373,14 @@ async def add_attachment(
     Add attachment to ticket
     """
     try:
-        result = TicketCreationService.add_attachment(
+        result = await AsyncTicketCreationService.add_attachment(
             ticket_id=ticket_id,
-            file_path=request.file_path,
             file_name=request.file_name,
-            attachment_type=request.attachment_type,
+            file_path=request.file_path,
             mime_type=request.mime_type,
-            file_size=request.file_size,
+            attachment_type=request.attachment_type,
             cloudinary_url=request.cloudinary_url,
+            file_size=request.file_size,
             created_by_user_id=request.created_by_user_id,
             admin_id=None
         )
@@ -410,7 +412,7 @@ async def add_rca(
         logger.info(f"RCA endpoint called: ticket_id={ticket_id}")
         logger.info(f"RCA request data: {request.dict()}")
         
-        result = TicketCreationService.add_root_cause_analysis(
+        result = await AsyncTicketCreationService.add_root_cause_analysis(
             ticket_id=ticket_id,
             root_cause_description=request.root_cause_description,
             created_by_user_id=request.created_by_user_id,
@@ -447,7 +449,7 @@ async def add_resolution_note(
 ):
     """Add resolution note to ticket"""
     try:
-        result = TicketCreationService.add_resolution_note(
+        result = await AsyncTicketCreationService.add_resolution_note(
             ticket_id=ticket_id,
             solution_description=request.solution_description,
             created_by_user_id=request.created_by_user_id,
@@ -476,7 +478,7 @@ async def delete_ticket(
 ):
     """Delete a ticket"""
     try:
-        result = TicketCreationService.delete_ticket(
+        result = await AsyncTicketCreationService.delete_ticket(
             ticket_id=ticket_id,
             admin_id=admin_payload.get("id")
         )
@@ -512,7 +514,7 @@ async def update_ticket(
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=f"Invalid closed_at date: {str(e)}")
         
-        result = TicketCreationService.update_ticket(
+        result = await AsyncTicketCreationService.update_ticket(
             ticket_id=ticket_id,
             subject=request.subject,
             summary=request.summary,
@@ -537,31 +539,33 @@ async def update_ticket(
 @cache_endpoint(ttl=600, tag="attachment:download", key_params=["attachment_id"])
 async def download_attachment(
     ticket_id: str,
-    attachment_id: str
+    attachment_id: str,
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Download attachment file - supports local files and Cloudinary URLs"""
     try:
-        from core.database import SessionLocal, Attachment, Ticket
+        from core.database import Attachment, Ticket
         from uuid import UUID
         import os
         from fastapi.responses import FileResponse, RedirectResponse
         
-        db = SessionLocal()
+        # Verify ticket exists
+        ticket_result = await db.execute(select(Ticket).where(Ticket.id == UUID(ticket_id)))
+        ticket = ticket_result.scalars().first()
+        if not ticket:
+            raise NotFoundError("Ticket not found")
         
-        try:
-            # Verify ticket exists
-            ticket = db.query(Ticket).filter(Ticket.id == UUID(ticket_id)).first()
-            if not ticket:
-                raise NotFoundError("Ticket not found")
-            
-            # Get attachment
-            attachment = db.query(Attachment).filter(
-                Attachment.id == UUID(attachment_id),
-                Attachment.ticket_id == UUID(ticket_id)
-            ).first()
-            
-            if not attachment:
-                raise NotFoundError("Attachment not found")
+        # Get attachment
+        attachment_result = await db.execute(
+            select(Attachment).where(
+                (Attachment.id == UUID(attachment_id)) &
+                (Attachment.ticket_id == UUID(ticket_id))
+            )
+        )
+        attachment = attachment_result.scalars().first()
+        
+        if not attachment:
+            raise NotFoundError("Attachment not found")
             
             file_path = attachment.file_path
             
@@ -580,9 +584,6 @@ async def download_attachment(
             # If neither remote nor local exists
             raise NotFoundError("File not found")
             
-        finally:
-            db.close()
-            
     except NotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -599,7 +600,7 @@ async def delete_attachment(
     """Delete attachment from ticket"""
     try:
         logger.info(f"Delete request: ticket_id={ticket_id}, attachment_id={attachment_id}")
-        result = TicketCreationService.delete_attachment(
+        result = await AsyncTicketCreationService.delete_attachment(
             ticket_id=ticket_id,
             attachment_id=attachment_id
         )
@@ -618,7 +619,8 @@ async def delete_attachment(
 @router.post("/{ticket_id}/upload-rca-attachment")
 async def upload_rca_attachment(
     ticket_id: str,
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_async_db)
 ):
     """
     Upload RCA-specific attachment file.
@@ -633,17 +635,14 @@ async def upload_rca_attachment(
     not immediately upon upload.
     """
     try:
-        from core.database import SessionLocal, Ticket
+        from core.database import Ticket
         from uuid import UUID
         
         # Verify ticket exists first
-        db = SessionLocal()
-        try:
-            ticket = db.query(Ticket).filter(Ticket.id == UUID(ticket_id)).first()
-            if not ticket:
-                raise NotFoundError("Ticket not found")
-        finally:
-            db.close()
+        result = await db.execute(select(Ticket).where(Ticket.id == UUID(ticket_id)))
+        ticket = result.scalars().first()
+        if not ticket:
+            raise NotFoundError("Ticket not found")
         
         # Read file content
         content = await file.read()
@@ -686,80 +685,78 @@ async def upload_rca_attachment(
 async def delete_rca_attachment(
     ticket_id: str,
     attachment_id: str,
-    admin_payload: dict = Depends(get_current_admin)
+    admin_payload: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Delete RCA attachment and its embeddings"""
     try:
-        from core.database import SessionLocal, RCAAttachment, Ticket, Embedding
+        from core.database import RCAAttachment, Ticket, Embedding
         from uuid import UUID
         
-        db = SessionLocal()
-        try:
-            ticket_uuid = UUID(ticket_id)
-            attachment_uuid = UUID(attachment_id)
-            
-            # Verify ticket exists
-            ticket = db.query(Ticket).filter(Ticket.id == ticket_uuid).first()
-            if not ticket:
-                raise HTTPException(status_code=404, detail="Ticket not found")
-            
-            # Get RCA attachment
-            rca_attachment = db.query(RCAAttachment).filter(
-                RCAAttachment.id == attachment_uuid
-            ).first()
-            
-            if not rca_attachment:
-                raise HTTPException(status_code=404, detail="RCA attachment not found")
+        ticket_uuid = UUID(ticket_id)
+        attachment_uuid = UUID(attachment_id)
+        
+        # Verify ticket exists
+        ticket_result = await db.execute(select(Ticket).where(Ticket.id == ticket_uuid))
+        ticket = ticket_result.scalars().first()
+        if not ticket:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+        
+        # Get RCA attachment
+        rca_result = await db.execute(select(RCAAttachment).where(RCAAttachment.id == attachment_uuid))
+        rca_attachment = rca_result.scalars().first()
+        
+        if not rca_attachment:
+            raise HTTPException(status_code=404, detail="RCA attachment not found")
             
             logger.info(f"Deleting RCA attachment {attachment_id}")
             
-            # Deprecate all embeddings linked to this RCA attachment
+        # Deprecate all embeddings linked to this RCA attachment
+        try:
+            embeddings_result = await db.execute(
+                select(Embedding).where(Embedding.rca_attachment_id == attachment_uuid)
+            )
+            embeddings = embeddings_result.scalars().all()
+            
+            if embeddings:
+                logger.info(f"Deprecating {len(embeddings)} embeddings for RCA attachment {attachment_id}")
+                for embedding in embeddings:
+                    embedding.is_deprecated = True
+                await db.flush()
+                logger.info(f"✓ Deprecated {len(embeddings)} embeddings")
+        except Exception as e:
+            logger.warning(f"Failed to deprecate embeddings: {e}")
+            
+        # Delete from Cloudinary if applicable
+        if rca_attachment.file_path and rca_attachment.file_path.startswith("http"):
             try:
-                embeddings = db.query(Embedding).filter(
-                    Embedding.rca_attachment_id == attachment_uuid
-                ).all()
+                import cloudinary
+                import cloudinary.uploader
+                from core.config import CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET
                 
-                if embeddings:
-                    logger.info(f"Deprecating {len(embeddings)} embeddings for RCA attachment {attachment_id}")
-                    for embedding in embeddings:
-                        embedding.is_deprecated = True
-                    db.flush()
-                    logger.info(f"✓ Deprecated {len(embeddings)} embeddings")
+                if all([CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET]):
+                    cloudinary.config(
+                        cloud_name=CLOUDINARY_CLOUD_NAME,
+                        api_key=CLOUDINARY_API_KEY,
+                        api_secret=CLOUDINARY_API_SECRET
+                    )
+                    public_id = rca_attachment.file_path.split('/')[-1].split('.')[0]
+                    cloudinary.uploader.destroy(f"tickets/{public_id}")
+                    logger.info(f"✓ Deleted from Cloudinary: {public_id}")
             except Exception as e:
-                logger.warning(f"Failed to deprecate embeddings: {e}")
-            
-            # Delete from Cloudinary if applicable
-            if rca_attachment.file_path and rca_attachment.file_path.startswith("http"):
-                try:
-                    import cloudinary
-                    import cloudinary.uploader
-                    from core.config import CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET
-                    
-                    if all([CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET]):
-                        cloudinary.config(
-                            cloud_name=CLOUDINARY_CLOUD_NAME,
-                            api_key=CLOUDINARY_API_KEY,
-                            api_secret=CLOUDINARY_API_SECRET
-                        )
-                        public_id = rca_attachment.file_path.split('/')[-1].split('.')[0]
-                        cloudinary.uploader.destroy(f"tickets/{public_id}")
-                        logger.info(f"✓ Deleted from Cloudinary: {public_id}")
-                except Exception as e:
-                    logger.warning(f"Failed to delete from Cloudinary: {e}")
-            
-            # Delete from database
-            db.delete(rca_attachment)
-            db.commit()
-            
-            logger.info(f"✓ RCA attachment deleted: {attachment_id}")
-            
-            return serialize_date_fields({
-                "success": True,
-                "message": "RCA attachment deleted successfully",
-                "attachment_id": attachment_id
-            })
-        finally:
-            db.close()
+                logger.warning(f"Failed to delete from Cloudinary: {e}")
+        
+        # Delete from database
+        db.delete(rca_attachment)
+        await db.commit()
+        
+        logger.info(f"✓ RCA attachment deleted: {attachment_id}")
+        
+        return serialize_date_fields({
+            "success": True,
+            "message": "RCA attachment deleted successfully",
+            "attachment_id": attachment_id
+        })
     except HTTPException:
         raise
     except Exception as e:

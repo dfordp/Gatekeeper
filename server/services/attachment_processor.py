@@ -98,15 +98,15 @@ class AttachmentProcessor:
             Text description of visual content, or None if analysis failed
         """
         if not GROQ_API_KEY:
-            logger.warning("GROQ_API_KEY not set, skipping vision analysis")
+            logger.info("GROQ_API_KEY not set, skipping vision analysis")
             return None
         
         try:
-            logger.info(f"Analyzing visual content with Grok: {file_path}")
+            logger.info(f"Analyzing visual content with Grok Vision: {file_path}")
             
             # Handle URLs directly (Cloudinary, etc.)
             if file_path.startswith(('http://', 'https://')):
-                logger.debug(f"  Using URL source (no base64 encoding)")
+                logger.info(f"  Using remote URL source (no base64 encoding): {file_path[:80]}...")
                 image_source = {
                     "type": "image_url",
                     "image_url": {"url": file_path}
@@ -132,7 +132,7 @@ class AttachmentProcessor:
                     }
                     media_type = ext_to_mime.get(ext, 'image/jpeg')
                 
-                logger.debug(f"  Reading local file ({media_type})")
+                logger.info(f"  Reading local file ({media_type})")
                 with open(file_path, 'rb') as f:
                     file_data = f.read()
                     encoded = base64.standard_b64encode(file_data).decode('utf-8')
@@ -155,7 +155,7 @@ class AttachmentProcessor:
                 system_prompt += f"\n\nContext: {ticket_context}\nUse this context to provide more relevant analysis."
             
             # Call Grok Vision API
-            logger.debug(f"  Calling Grok Vision API ({VISION_MODEL})...")
+            logger.info(f"  Calling Grok Vision API (model={VISION_MODEL})...")
             response = requests.post(
                 GROQ_API_URL,
                 headers={
@@ -189,6 +189,8 @@ class AttachmentProcessor:
                 timeout=60
             )
             
+            logger.info(f"  Vision API response status: {response.status_code}")
+            
             if response.status_code == 200:
                 result = response.json()
                 description = result.get('choices', [{}])[0].get('message', {}).get('content', '')
@@ -200,15 +202,15 @@ class AttachmentProcessor:
                     logger.warning("Vision API returned empty response")
                     return None
             else:
-                error_msg = response.text[:200]
-                logger.warning(f"Vision API error {response.status_code}: {error_msg}")
+                error_msg = response.text[:500]
+                logger.error(f"Vision API error {response.status_code}: {error_msg}")
                 return None
                 
         except requests.Timeout:
             logger.warning("Vision API request timeout (60s)")
             return None
         except Exception as e:
-            logger.warning(f"Vision analysis failed: {e}")
+            logger.error(f"Vision analysis failed: {e}", exc_info=True)
             return None
     
     @staticmethod
@@ -254,25 +256,35 @@ class AttachmentProcessor:
                 logger.error(f"Attachment not found: {attachment_id}")
                 return 0
             
+            # Use passed mime_type if database value is missing
+            attachment_mime_type = attachment.mime_type or mime_type
+            
             logger.info(f"Processing attachment {attachment_id}")
-            logger.debug(f"  Type: {attachment.type}, MIME: {attachment.mime_type}")
+            logger.info(f"  Type: {attachment.type}, MIME: '{attachment_mime_type}' (from: {'DB' if attachment.mime_type else 'param'}), Path: {attachment.file_path[:100] if attachment.file_path else 'None'}...")
             
             extracted_text = None
             visual_description = None
             
             # Step 1: Vision analysis for images and videos
-            if attachment.mime_type in AttachmentProcessor.IMAGE_MIME_TYPES or \
-               attachment.mime_type in AttachmentProcessor.VIDEO_MIME_TYPES:
+            logger.info(f"  Checking if attachment is image/video...")
+            logger.info(f"    MIME type value: '{attachment_mime_type}'")
+            logger.info(f"    Is in IMAGE_MIME_TYPES: {attachment_mime_type in AttachmentProcessor.IMAGE_MIME_TYPES}")
+            logger.info(f"    Is in VIDEO_MIME_TYPES: {attachment_mime_type in AttachmentProcessor.VIDEO_MIME_TYPES}")
+            
+            if attachment_mime_type and (attachment_mime_type in AttachmentProcessor.IMAGE_MIME_TYPES or \
+            attachment_mime_type in AttachmentProcessor.VIDEO_MIME_TYPES):
                 
+                logger.info(f"  ✓ Detected as image/video, calling vision analysis...")
                 context = f"Ticket: {ticket_subject}" if ticket_subject else None
                 
                 visual_description = AttachmentProcessor.analyze_visual_content(
                     attachment.file_path,
-                    attachment.mime_type,
+                    attachment_mime_type,
                     context
                 )
+                logger.info(f"  Vision analysis returned: {bool(visual_description)}")
                 
-                # Step 5: Store visual analysis in metadata (if applicable)
+                # Store visual analysis in metadata (if applicable)
                 if visual_description:
                     try:
                         attachment.metadata = {
@@ -280,9 +292,11 @@ class AttachmentProcessor:
                             "analysis_timestamp": to_iso_date(date.today())
                         }
                         db.commit()
-                        logger.debug(f"  ✓ Stored visual analysis metadata")
+                        logger.info(f"  ✓ Stored visual analysis metadata")
                     except Exception as e:
                         logger.warning(f"Failed to store metadata: {e}")
+            else:
+                logger.info(f"  MIME type is not image/video or is None, skipping vision analysis")
             
             # Step 2: Text extraction from PDFs and documents (for local files)
             if attachment.file_path and not attachment.file_path.startswith(('http://', 'https://')):

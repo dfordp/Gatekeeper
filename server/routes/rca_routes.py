@@ -4,10 +4,12 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional, List
-from core.database import SessionLocal
-from services.rca_service import RCAService
+from services.async_rca_service import AsyncRCAService
 from utils.exceptions import ValidationError, NotFoundError
 from middleware.cache_decorator import cache_endpoint, cache_endpoint_with_body, invalidate_on_mutation
+from core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 # ==================== REQUEST MODELS ====================
@@ -45,7 +47,7 @@ async def create_rca(
         Created/updated RCA with metadata
     """
     try:
-        result = RCAService.create_or_update_rca(
+        result = await AsyncRCAService.create_or_update_rca(
             ticket_id=ticket_id,
             root_cause_description=request.root_cause,
             contributing_factors=request.contributing_factors,
@@ -60,6 +62,7 @@ async def create_rca(
     except NotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
+        logger.error(f"Error creating RCA: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to create RCA: {str(e)}")
 
 
@@ -76,11 +79,12 @@ async def get_rca(ticket_id: str):
         RCA details with attachments and metadata
     """
     try:
-        rca = RCAService.get_rca_with_details(ticket_id)
+        rca = await AsyncRCAService.get_rca_with_details(ticket_id)
         if not rca:
             raise HTTPException(status_code=404, detail="No RCA found for this ticket")
         return rca
     except Exception as e:
+        logger.error(f"Error getting RCA: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch RCA: {str(e)}")
 
 
@@ -108,9 +112,9 @@ async def search_rcas(
         Search results with RCA details
     """
     try:
-        results = RCAService.search_rcas_by_keyword(
-            keyword=keyword,
+        results = await AsyncRCAService.search_rcas_by_keyword(
             company_id=company_id,
+            keyword=keyword,
             limit=limit
         )
         return {
@@ -119,4 +123,5 @@ async def search_rcas(
             "results": results
         }
     except Exception as e:
+        logger.error(f"Error searching RCAs: {e}")
         raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")

@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel, Field
 
 from middleware.auth_middleware import get_current_admin
-from services.company_service import CompanyService
+from services.async_company_service import AsyncCompanyService
 from utils.exceptions import ValidationError, NotFoundError, ConflictError
 from core.logger import get_logger
 from middleware.cache_decorator import cache_endpoint, invalidate_on_mutation
@@ -27,7 +27,7 @@ async def create_company(
 ):
     """Create a new company"""
     try:
-        result = CompanyService.create_company(
+        result = await AsyncCompanyService.create_company(
             name=request.name,
             created_by_admin_id=admin_payload.get("sub")
         )
@@ -48,9 +48,9 @@ async def get_companies(
     offset: int = Query(0, ge=0),
     admin_payload: dict = Depends(get_current_admin)
 ):
-    """Get list of all companies"""
+    """Get paginated list of companies"""
     try:
-        result = CompanyService.get_companies(limit=limit, offset=offset)
+        result = await AsyncCompanyService.get_companies(limit=limit, offset=offset)
         return result
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -65,9 +65,9 @@ async def get_company(
     company_id: str,
     admin_payload: dict = Depends(get_current_admin)
 ):
-    """Get company details"""
+    """Get a specific company by ID"""
     try:
-        result = CompanyService.get_company_by_id(company_id)
+        result = await AsyncCompanyService.get_company_by_id(company_id)
         return result
     except NotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))

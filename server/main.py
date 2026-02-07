@@ -33,6 +33,7 @@ from core.logger import get_logger
 
 from utils.datetime_utils import to_iso_date
 from services.redis_cache_service import init_cache, close_cache
+from contextlib import asynccontextmanager
 
 # Middleware
 from middleware.error_handler import register_error_handlers
@@ -50,6 +51,17 @@ from routes.rca_routes import router as rca_router
 from routes.cache_routes import router as cache_router
 from routes.ir_routes import router as ir_router
 from routes.chat_routes import router as chat_router
+from routes.health_routes import router as health_router
+from core.health_check import HealthCheckSystem
+from routes.performance_routes import router as performance_router
+from routes.query_analysis_routes import router as query_analysis_router
+from routes.replica_management_routes import router as replica_management_router
+from routes.monitoring_routes import router as monitoring_router
+from routes.partition_routes import router as partition_router
+from routes.cache_levels_routes import router as cache_levels_router
+from core.observability import TelemetryCollector, ServiceHealthTracker
+from routes.telemetry_routes import router as telemetry_router
+
 
 # Legacy session management (keeping for bot compatibility)
 from session import (
@@ -77,8 +89,19 @@ from http_routes import http_router
 
 logger = get_logger(__name__)
 
-# Initialize Groq client
-groq_client = Groq(api_key=GROQ_API_KEY)
+# Initialize Groq client (skip if version incompatibility)
+groq_client = None
+if GROQ_API_KEY:
+    print("Groq Key",GROQ_API_KEY)
+    try:
+        groq_client = Groq(api_key=GROQ_API_KEY)
+        logger.info("✓ Groq client initialized")
+    except (TypeError, Exception) as e:
+        logger.warning(f"Groq client initialization failed ({type(e).__name__}): {e}")
+        logger.warning("AI vision/chat features will be disabled, but application will continue")
+        groq_client = None
+else:
+    groq_client = None
 
 # File size limits (in bytes)
 MAX_IMAGE_SIZE = 5 * 1024 * 1024  # 5MB for images
@@ -102,7 +125,8 @@ if not GROQ_API_KEY:
 app = FastAPI(
     title="Gatekeeper Support Platform",
     description="Support ticket management system with semantic search, deduplication, and admin portal",
-    version="2.0.0"
+    version="2.0.0",
+    lifespan=lifespan
 )
 
 # ==================== MIDDLEWARE SETUP ====================
@@ -137,6 +161,15 @@ app.include_router(rca_router)
 app.include_router(cache_router)
 app.include_router(ir_router)
 app.include_router(chat_router)
+app.include_router(health_router)
+app.include_router(performance_router)
+app.include_router(query_analysis_router)
+app.include_router(replica_management_router)
+app.include_router(monitoring_router)
+app.include_router(partition_router)
+app.include_router(cache_levels_router)
+app.include_router(telemetry_router)
+
 
 # Legacy HTTP routes (existing bot)
 app.include_router(http_router)
@@ -243,8 +276,8 @@ async def analyze_image_with_vision(image_path: str, chat_id: int) -> str | None
     Returns:
         Analysis text or None if failed
     """
-    if not GROQ_API_KEY:
-        logger.warning("OpenAI API key not configured")
+    if not GROQ_API_KEY or groq_client is None:
+        logger.warning("Groq client not available for image analysis")
         return None
     
     try:
@@ -308,8 +341,8 @@ async def extract_info_from_image_analysis(chat_id: int, analysis_text: str, ses
         analysis_text: Image analysis from vision API
         session: User session object
     """
-    if not analysis_text.strip() or not GROQ_API_KEY:
-        return
+    if not GROQ_API_KEY or groq_client is None:
+        return "AI features are currently unavailable. Please contact administrator."
     
     try:
         available_options = _get_available_options()
@@ -1010,12 +1043,34 @@ async def telegram_webhook(req: Request):
         send_message(chat_id, "Sorry, something went wrong. Please try again.")
         return {"ok": False}
 
-# ==================== STARTUP/SHUTDOWN ====================
+# ==================== LIFESPAN EVENTS ====================
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize cache and database on startup"""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Manage application lifespan - startup and shutdown events
+    
+    Replaces deprecated @app.on_event() decorators
+    """
+    # ========== STARTUP ==========
     logger.info("Starting Gatekeeper application...")
+    
+    # Initialize async database
+    from core.async_database import startup_async_db
+    try:
+        await startup_async_db()
+        logger.info("✓ Async database initialized")
+    except Exception as e:
+        logger.error(f"✗ Async database initialization failed: {e}")
+        raise
+    
+    # Initialize health check system
+    try:
+        health_system = HealthCheckSystem()
+        await health_system.check_all()
+        logger.info("✓ Health check system initialized and validated")
+    except Exception as e:
+        logger.warning(f"Health check initialization encountered issues: {e}")
     
     # Initialize database
     init_db()
@@ -1028,12 +1083,19 @@ async def startup_event():
         logger.warning(f"Cache initialization failed, continuing without cache: {e}")
     
     logger.info("✓ Gatekeeper started successfully")
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Clean up resources on shutdown"""
+    
+    yield  # Application runs here
+    
+    # ========== SHUTDOWN ==========
     logger.info("Shutting down Gatekeeper...")
+    
+    # Shutdown async database
+    from core.async_database import shutdown_async_db
+    try:
+        await shutdown_async_db()
+        logger.info("✓ Async database disposed")
+    except Exception as e:
+        logger.error(f"Error disposing async database: {e}")
     
     try:
         await close_cache()
