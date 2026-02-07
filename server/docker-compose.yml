@@ -20,6 +20,12 @@ services:
     restart: unless-stopped
     environment:
       - REDIS_REPLICATION_DISKLESS=yes
+    # --- ADDED RESOURCE LIMITS ---
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
 
   # PostgreSQL Database
   postgres:
@@ -41,6 +47,12 @@ services:
     networks:
       - gatekeeper_network
     restart: unless-stopped
+    # --- ADDED RESOURCE LIMITS ---
+    deploy:
+      resources:
+        limits:
+          memory: 6G
+          cpus: '1.5'
 
   # Qdrant Vector Database
   qdrant:
@@ -53,6 +65,8 @@ services:
       - qdrant_data:/qdrant/storage
     environment:
       QDRANT_API_KEY: qdrant_secure_key_123
+      QDRANT__STORAGE__ON_DISK_PAYLOAD: "true"
+      QDRANT__VECTORS__ON_DISK: "true"
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:6333/health || exit 1"]
       interval: 30s
@@ -62,6 +76,12 @@ services:
     networks:
       - gatekeeper_network
     restart: unless-stopped
+    # --- ADDED RESOURCE LIMITS ---
+    deploy:
+      resources:
+        limits:
+          memory: 12G
+          cpus: '3.0'
 
   # Gatekeeper Application
   gatekeeper:
@@ -99,6 +119,12 @@ services:
     networks:
       - gatekeeper_network
     restart: unless-stopped
+    # --- ADDED RESOURCE LIMITS ---
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+          cpus: '2.5'
 
 volumes:
   redis_data:
