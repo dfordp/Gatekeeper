@@ -22,6 +22,7 @@ from core.async_database import get_async_db
 from services.async_ticket_creation_service import AsyncTicketCreationService
 from services.file_upload_service import FileUploadService
 from services.ticket_request_queue import TicketRequestQueue
+from services.timeout_wrapper import run_with_timeout, OperationTimeout
 from utils.exceptions import ValidationError, NotFoundError, ConflictError
 from core.logger import get_logger
 from middleware.cache_decorator import cache_endpoint, invalidate_on_mutation
@@ -100,7 +101,7 @@ async def create_ticket(
     db: AsyncSession = Depends(get_async_db)
 ):
     """
-    Create a new ticket with optional older ticket support.
+    Create a new ticket with timeout protection (60 seconds).
     
     Integrates Phase 1:
     - Queues embedding creation task
@@ -113,52 +114,20 @@ async def create_ticket(
     - Optional engineer assignment
     """
     try:
-        created_at = None
-        if request.created_at:        
-            try:
-                created_at = parse_iso_date(request.created_at)
-            except ValueError as e:
-                raise HTTPException(status_code=400, detail=f"Invalid created_at date: {str(e)}")
-        
-        closed_at = None
-        if request.closed_at:
-            try:
-                closed_at = parse_iso_date(request.closed_at)
-            except ValueError as e:
-                raise HTTPException(status_code=400, detail=f"Invalid closed_at date: {str(e)}")
-        
-        # Create ticket (synchronous)
-        result = await AsyncTicketCreationService.create_ticket(
-            subject=request.subject,
-            detailed_description=request.detailed_description,
-            company_id=request.company_id,
-            raised_by_user_id=request.raised_by_user_id,
-            summary=request.summary,
-            category=request.category,
-            level=request.level,
-            assigned_engineer_id=request.assigned_engineer_id,
-            created_at=created_at,
-            closed_at=closed_at,
-            created_by_admin_id=admin_payload.get("id"),
-            ticket_no=request.ticket_no,
-            status=request.status
+        # Wrap with timeout protection (60 seconds for ticket creation)
+        result = await run_with_timeout(
+            _create_ticket_impl(request, admin_payload, db),
+            timeout_seconds=60,
+            operation_name="ticket_creation"
         )
-        
-        # Get ticket async task status (Phase 1)
-        try:
-            ticket_status = TicketRequestQueue.get_ticket_status(result["id"])
-            result["creation_status"] = "success"
-            result["async_tasks"] = {
-                "task_summary": ticket_status.get("task_breakdown", {}),
-                "polling_url": f"/api/tickets/creation-status/{result['id']}",
-                "in_progress": ticket_status.get("in_progress_tasks", 0) > 0
-            }
-        except Exception as e:
-            logger.warning(f"Failed to get ticket status: {e}")
-            result["async_tasks"] = {"error": "Failed to track async tasks"}
-        
-        return serialize_date_fields(result)
-        
+        return result
+    
+    except OperationTimeout as e:
+        logger.error(f"Ticket creation timeout: {e}")
+        raise HTTPException(
+            status_code=504,
+            detail="Ticket creation timed out. Please retry."
+        )
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except NotFoundError as e:
@@ -168,6 +137,62 @@ async def create_ticket(
     except Exception as e:
         logger.error(f"Error creating ticket: {e}")
         raise HTTPException(status_code=500, detail="Failed to create ticket")
+
+
+async def _create_ticket_impl(
+    request: CreateTicketRequest,
+    admin_payload: dict,
+    db: AsyncSession
+):
+    """
+    Implementation of ticket creation (extracted for timeout wrapping).
+    This is the actual business logic that gets wrapped with timeout protection.
+    """
+    created_at = None
+    if request.created_at:        
+        try:
+            created_at = parse_iso_date(request.created_at)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid created_at date: {str(e)}")
+    
+    closed_at = None
+    if request.closed_at:
+        try:
+            closed_at = parse_iso_date(request.closed_at)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid closed_at date: {str(e)}")
+    
+    # Create ticket
+    result = await AsyncTicketCreationService.create_ticket(
+        subject=request.subject,
+        detailed_description=request.detailed_description,
+        company_id=request.company_id,
+        raised_by_user_id=request.raised_by_user_id,
+        summary=request.summary,
+        category=request.category,
+        level=request.level,
+        assigned_engineer_id=request.assigned_engineer_id,
+        created_at=created_at,
+        closed_at=closed_at,
+        created_by_admin_id=admin_payload.get("id"),
+        ticket_no=request.ticket_no,
+        status=request.status
+    )
+    
+    # Get ticket async task status (Phase 1)
+    try:
+        ticket_status = TicketRequestQueue.get_ticket_status(result["id"])
+        result["creation_status"] = "success"
+        result["async_tasks"] = {
+            "task_summary": ticket_status.get("task_breakdown", {}),
+            "polling_url": f"/api/tickets/creation-status/{result['id']}",
+            "in_progress": ticket_status.get("in_progress_tasks", 0) > 0
+        }
+    except Exception as e:
+        logger.warning(f"Failed to get ticket status: {e}")
+        result["async_tasks"] = {"error": "Failed to track async tasks"}
+    
+    return serialize_date_fields(result)
 
 
 @router.get("/creation-status/{ticket_id}")

@@ -38,6 +38,7 @@ from contextlib import asynccontextmanager
 # Middleware
 from middleware.error_handler import register_error_handlers
 from middleware.audit_middleware import audit_middleware
+from middleware.rate_limit import RateLimitMiddleware
 
 # Routes
 from routes.auth_routes import router as auth_router
@@ -141,6 +142,7 @@ app.add_middleware(
 )
 
 # Audit middleware for admin actions
+app.add_middleware(RateLimitMiddleware)
 app.middleware("http")(audit_middleware)
 
 # ==================== ERROR HANDLERS ====================
