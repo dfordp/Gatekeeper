@@ -50,6 +50,8 @@ from routes.rca_routes import router as rca_router
 from routes.cache_routes import router as cache_router
 from routes.ir_routes import router as ir_router
 from routes.chat_routes import router as chat_router
+from routes.email_routes import router as email_router
+from routes.zoho_oauth_routes import router as zoho_oauth_router
 
 # Legacy session management (keeping for bot compatibility)
 from session import (
@@ -137,6 +139,9 @@ app.include_router(rca_router)
 app.include_router(cache_router)
 app.include_router(ir_router)
 app.include_router(chat_router)
+app.include_router(email_router)
+app.include_router(zoho_oauth_router)
+
 
 # Legacy HTTP routes (existing bot)
 app.include_router(http_router)

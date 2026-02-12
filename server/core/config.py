@@ -67,3 +67,12 @@ REDIS_DB = int(os.getenv("REDIS_DB", "0"))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", None)
 CACHE_DEFAULT_TTL = int(os.getenv("CACHE_DEFAULT_TTL", "60"))  # seconds
 CACHE_MAX_SIZE = int(os.getenv("CACHE_MAX_SIZE", "1000"))  # max entries
+
+# Zoho CRM OAuth
+ZOHO_CLIENT_ID = os.getenv("ZOHO_CLIENT_ID")
+ZOHO_CLIENT_SECRET = os.getenv("ZOHO_CLIENT_SECRET")
+ZOHO_REDIRECT_URI = os.getenv("ZOHO_REDIRECT_URI", "http://localhost:8000/api/zoho/oauth/callback")
+ZOHO_SCOPE = os.getenv("ZOHO_SCOPE", "ZohoCRM.modules.READ ZohoCRM.modules.CREATE ZohoCRM.modules.UPDATE ZohoCRM.users.READ ZohoCRM.settings.READ")
+ZOHO_OAUTH_URL = "https://accounts.zoho.com/oauth/v2/auth"
+ZOHO_TOKEN_URL = "https://accounts.zoho.com/oauth/v2/token"
+ZOHO_API_BASE_URL = os.getenv("ZOHO_API_BASE_URL", "https://www.zohoapis.com/crm/v2.1")
