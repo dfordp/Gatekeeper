@@ -1,4 +1,3 @@
-# server/routes/chat_routes.py
 """
 Chat Routes - Telegram webhook handler with cache decorators
 
@@ -27,8 +26,10 @@ from core.config import TELEGRAM_BOT_TOKEN, TELEGRAM_API
 from middleware.cache_decorator import cache_endpoint, invalidate_on_mutation
 from services.chat_ticket_service import ChatTicketService
 from services.chat_search_service import ChatSearchService
+from services.ticket_resolution_service import TicketResolutionService
 from utils.exceptions import ValidationError
 from middleware.auth_middleware import get_current_admin
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -41,13 +42,10 @@ chat_search_service = ChatSearchService()
 @router.post("/webhook")
 @invalidate_on_mutation(tags=["chat:sessions", "ticket:list"])
 async def handle_telegram_webhook(request: Request, db: Session = Depends(get_db)):
-    """
-    Handle incoming Telegram messages.
-    """
+    """Handle incoming Telegram messages."""
     try:
         body = await request.json()
         logger.info(f"Received webhook from Telegram user: {body.get('message', {}).get('from', {}).get('id')}")
-        
         
         # Extract Telegram update
         message = body.get("message", {})
@@ -59,7 +57,6 @@ async def handle_telegram_webhook(request: Request, db: Session = Depends(get_db
         caption = message.get("caption", "").strip()
         
         logger.info(f"Message content: text={bool(text)}, photo={bool(photo)}, document={bool(document)}, caption={bool(caption)}")
-        logger.info(f"Full message object: {json.dumps(message, default=str)}")
         
         if not chat_id or not telegram_user_id:
             logger.warning("Missing chat_id or telegram_user_id in webhook")
@@ -92,7 +89,7 @@ async def handle_telegram_webhook(request: Request, db: Session = Depends(get_db
         
         # Update last message time
         chat_session.last_message_at = datetime.utcnow()
-                
+        
         response = None
         
         # Handle text messages
@@ -104,7 +101,7 @@ async def handle_telegram_webhook(request: Request, db: Session = Depends(get_db
                 db=db
             )
         
-        # Handle photo messages (with or without caption)
+        # Handle photo messages
         elif photo:
             logger.info(f"Handling photo message with {len(photo)} photo(s), caption={bool(caption)}")
             response = await _handle_photo_message(
@@ -114,7 +111,7 @@ async def handle_telegram_webhook(request: Request, db: Session = Depends(get_db
                 db=db
             )
         
-        # Handle document messages (files, screenshots, etc. with optional caption)
+        # Handle document messages
         elif document:
             logger.info(f"Handling document message: {document.get('file_name')}, caption={bool(caption)}")
             response = await _handle_document_message(
@@ -124,10 +121,9 @@ async def handle_telegram_webhook(request: Request, db: Session = Depends(get_db
                 db=db
             )
         
-        # Handle caption-only (document with caption but no text field)
+        # Handle caption-only
         elif caption:
-            logger.info(f"Handling caption-only message ({len(caption)} chars): {caption[:50]}...")
-            # Treat caption as text message
+            logger.info(f"Handling caption-only message ({len(caption)} chars)")
             response = await _handle_text_message(
                 text=caption,
                 chat_session=chat_session,
@@ -135,13 +131,11 @@ async def handle_telegram_webhook(request: Request, db: Session = Depends(get_db
             )
         
         else:
-            logger.warning("Message has no text, photo, document, or caption")
+            logger.warning("Message has no content")
         
         if response:
             logger.info(f"Sending response: {response[:100]}...")
             await _send_telegram_message(chat_id=chat_id, text=response)
-        else:
-            logger.warning("No response generated from message handler")
         
         db.commit()
         return {"status": "ok"}
@@ -165,51 +159,276 @@ async def _handle_text_message(
         
         state = chat_session.session_state
         waiting_for_confirmation = state.get("waiting_for_confirmation", False)
-        pending_issue = state.get("pending_issue")
-        pending_analysis = state.get("pending_analysis")
+        resolution_check_mode = state.get("resolution_check_mode", False)
+        ticket_details_mode = state.get("ticket_details_mode", False)
+        awaiting_category = state.get("awaiting_category", False)
         
-        logger.info(f"State check: waiting={waiting_for_confirmation}, issue={'✓' if pending_issue else '✗'}, analysis={'✓' if pending_analysis else '✗'}")
+        logger.info(
+            f"State: waiting={waiting_for_confirmation}, resolution={resolution_check_mode}, "
+            f"details={ticket_details_mode}, category={awaiting_category}"
+        )
+        
+        # ============================================================
+        # STATE: User is viewing similar tickets and selecting one
+        # ============================================================
+        if resolution_check_mode and state.get("similar_ticket_refs"):
+            logger.info(f"Resolution check mode. User input: '{text}'")
+            response_lower = text.lower().strip()
+            
+            # Retrieve tickets from cache
+            similar_tickets = TicketResolutionService.get_cached_similar_tickets(
+                str(chat_session.id)
+            )
+            
+            if not similar_tickets:
+                logger.warning("Similar tickets cache expired or empty")
+                chat_session.session_state["resolution_check_mode"] = False
+                flag_modified(chat_session, "session_state")
+                db.commit()
+                return "The search results have expired. Please send your issue again."
+            
+            logger.info(f"Retrieved {len(similar_tickets)} cached tickets")
+            
+            # Check for decline (no / create new / etc.)
+            decline_words = ['no', 'nope', 'nah', 'false', 'create new', 'skip', 'none', 'different', 'other']
+            if any(word in response_lower for word in decline_words):
+                logger.info("User declined similar tickets, creating new ticket with inferred category")
+                
+                # Get inferred category from pending analysis
+                pending_analysis = state.get("pending_analysis", {})
+                inferred_category = pending_analysis.get("inferred_category", "other")
+                original_issue = state.get("pending_issue", "Support issue")
+                
+                # Clear cache
+                TicketResolutionService.clear_cached_similar_tickets(str(chat_session.id))
+                
+                try:
+                    ticket = chat_ticket_service.create_ticket_from_chat(
+                        chat_session_id=chat_session.id,
+                        issue_description=original_issue,
+                        inferred_category=inferred_category
+                    )
+                    
+                    if not ticket:
+                        chat_session.session_state["resolution_check_mode"] = False
+                        flag_modified(chat_session, "session_state")
+                        db.commit()
+                        return "❌ Failed to create ticket after multiple attempts. Please try again."
+                    
+                    # Clear all states
+                    chat_session.session_state["resolution_check_mode"] = False
+                    chat_session.session_state["similar_ticket_refs"] = None
+                    chat_session.session_state["ticket_details_mode"] = False
+                    chat_session.session_state["pending_issue"] = None
+                    chat_session.session_state["pending_analysis"] = None
+                    flag_modified(chat_session, "session_state")
+                    db.commit()
+                    
+                    logger.info(f"✓ Ticket created: {ticket.get('ticket_no')}")
+                    
+                    return (
+                        f"✅ **Ticket Created!**\n\n"
+                        f"🎫 Ticket Number: **{ticket.get('ticket_no')}**\n"
+                        f"📌 Subject: {original_issue[:80]}...\n"
+                        f"📂 Category: {inferred_category}\n\n"
+                        f"Your support request has been submitted. Our team will review it shortly.\n\n"
+                        f"Is there anything else I can help you with?"
+                    )
+                
+                except Exception as e:
+                    logger.error(f"Error creating ticket: {e}", exc_info=True)
+                    chat_session.session_state["resolution_check_mode"] = False
+                    flag_modified(chat_session, "session_state")
+                    db.commit()
+                    return f"❌ Failed to create ticket: {str(e)}"
+            
+            # Check for ticket number selection (1, 2, 3)
+            if text.isdigit():
+                ticket_idx = int(text) - 1
+                logger.info(f"User selected ticket index: {ticket_idx}")
+                
+                if 0 <= ticket_idx < len(similar_tickets):
+                    selected_ticket = similar_tickets[ticket_idx]
+                    logger.info(f"Selected ticket: {selected_ticket.get('ticket_no')}")
+                    
+                    # Store selected ticket info
+                    chat_session.session_state["ticket_details_mode"] = True
+                    chat_session.session_state["selected_ticket_idx"] = ticket_idx
+                    chat_session.session_state["selected_ticket_id"] = selected_ticket["ticket_id"]
+                    flag_modified(chat_session, "session_state")
+                    db.commit()
+                    
+                    # Return ticket details
+                    details_message = TicketResolutionService.format_ticket_details_for_telegram(
+                        selected_ticket
+                    )
+                    return details_message
+                else:
+                    logger.warning(f"Invalid ticket index: {ticket_idx}")
+                    return f"Please select a valid ticket number (1-{len(similar_tickets)})"
+            
+            # Check for confirmation (yes)
+            confirmation_words = ['yes', 'y', 'confirmed', 'works', 'solved', 'perfect', 'thanks', 'that\'s it']
+            if any(word in response_lower for word in confirmation_words):
+                logger.info("User confirmed issue is resolved")
+                
+                # Clear all states
+                TicketResolutionService.clear_cached_similar_tickets(str(chat_session.id))
+                chat_session.session_state["resolution_check_mode"] = False
+                chat_session.session_state["similar_ticket_refs"] = None
+                chat_session.session_state["ticket_details_mode"] = False
+                chat_session.session_state["waiting_for_confirmation"] = False
+                chat_session.session_state["pending_issue"] = None
+                flag_modified(chat_session, "session_state")
+                db.commit()
+                
+                return (
+                    "✅ Excellent! Your issue is resolved.\n\n"
+                    "📝 **For your records:**\n"
+                    "• Keep the ticket number for future reference\n"
+                    "• If you have more questions, just send a message\n\n"
+                    "Thank you for using Gatekeeper! 🚀"
+                )
+            
+            # Invalid input - ask again
+            ticket_refs = state.get("similar_ticket_refs", [])
+            return (
+                "Please select an option:\n"
+                f"• Reply with **number** (1-{len(ticket_refs)}) for full details\n"
+                "• Reply **'yes'** if this resolves it\n"
+                "• Reply **'no'** to create a new ticket"
+            )
+        
+        # ============================================================
+        # STATE: User is viewing ticket details
+        # ============================================================
+        if ticket_details_mode:
+            logger.info(f"Ticket details mode. User input: '{text}'")
+            response_lower = text.lower().strip()
+            
+            # Check for confirmation
+            confirmation_words = ['yes', 'y', 'works', 'solved', 'thanks', 'perfect']
+            if any(word in response_lower for word in confirmation_words):
+                logger.info("User confirmed ticket resolved their issue")
+                
+                # Clear all states
+                TicketResolutionService.clear_cached_similar_tickets(str(chat_session.id))
+                chat_session.session_state["resolution_check_mode"] = False
+                chat_session.session_state["ticket_details_mode"] = False
+                chat_session.session_state["similar_ticket_refs"] = None
+                flag_modified(chat_session, "session_state")
+                db.commit()
+                
+                return (
+                    "✅ Great! Your issue is resolved.\n\n"
+                    "Thank you for using Gatekeeper! If you have more questions, just reach out. 🚀"
+                )
+            
+            # Check for decline
+            decline_words = ['no', 'doesn\'t work', 'more help', 'create new']
+            if any(word in response_lower for word in decline_words):
+                logger.info("User needs different solution")
+                
+                # Retrieve cached tickets
+                similar_tickets = TicketResolutionService.get_cached_similar_tickets(
+                    str(chat_session.id)
+                )
+                
+                chat_session.session_state["ticket_details_mode"] = False
+                flag_modified(chat_session, "session_state")
+                db.commit()
+                
+                if similar_tickets and len(similar_tickets) > 1:
+                    list_msg = TicketResolutionService.format_similar_tickets_for_telegram(similar_tickets)
+                    return f"Let me show you the other similar tickets:\n\n{list_msg}"
+                else:
+                    # Create ticket with inferred category
+                    pending_analysis = state.get("pending_analysis", {})
+                    inferred_category = pending_analysis.get("inferred_category", "other")
+                    original_issue = state.get("pending_issue", "Support issue")
+                    
+                    try:
+                        ticket = chat_ticket_service.create_ticket_from_chat(
+                            chat_session_id=chat_session.id,
+                            issue_description=original_issue,
+                            inferred_category=inferred_category
+                        )
+                        
+                        # Clear all states
+                        chat_session.session_state["resolution_check_mode"] = False
+                        chat_session.session_state["ticket_details_mode"] = False
+                        chat_session.session_state["similar_ticket_refs"] = None
+                        chat_session.session_state["pending_issue"] = None
+                        chat_session.session_state["pending_analysis"] = None
+                        flag_modified(chat_session, "session_state")
+                        db.commit()
+                        
+                        logger.info(f"✓ Ticket created: {ticket.get('ticket_no')}")
+                        
+                        return (
+                            f"✅ **Ticket Created!**\n\n"
+                            f"🎫 Ticket Number: **{ticket.get('ticket_no')}**\n"
+                            f"📌 Subject: {original_issue[:80]}...\n"
+                            f"📂 Category: {inferred_category}\n\n"
+                            f"Your support request has been submitted. Our team will review it shortly.\n\n"
+                            f"Is there anything else I can help you with?"
+                        )
+                    except Exception as e:
+                        logger.error(f"Error creating ticket: {e}", exc_info=True)
+                        chat_session.session_state["ticket_details_mode"] = False
+                        flag_modified(chat_session, "session_state")
+                        db.commit()
+                        return f"❌ Failed to create ticket: {str(e)}"
+            
+            # Default response
+            return "Did this ticket help? Reply: yes / no / need more help"
         
         # ============================================================
         # STATE: User is confirming ticket creation
         # ============================================================
-        if waiting_for_confirmation and pending_issue and pending_analysis:
-            logger.info(f"User confirmation state detected. User input: {text}")
+        if waiting_for_confirmation:
+            logger.info(f"Ticket confirmation. User input: '{text}'")
             response_lower = text.lower().strip()
             
+            # Check for confirmation
             if response_lower in ["yes", "y", "confirm", "create", "ok"]:
-                # User confirmed - create ticket
+                logger.info("User confirmed ticket creation")
+                
+                pending_issue = state.get("pending_issue", "")
+                pending_analysis = state.get("pending_analysis", {})
+                inferred_category = pending_analysis.get("inferred_category", "other")
+                
                 try:
-                    logger.info(f"Creating ticket with category: {pending_analysis.get('inferred_category')}")
                     ticket_result = chat_ticket_service.create_ticket_from_chat(
                         chat_session_id=chat_session.id,
                         issue_description=pending_issue,
-                        inferred_category=pending_analysis.get("inferred_category")
+                        inferred_category=inferred_category
                     )
                     
                     # Clear pending state
                     chat_session.session_state["waiting_for_confirmation"] = False
                     chat_session.session_state["pending_issue"] = None
                     chat_session.session_state["pending_analysis"] = None
+                    chat_session.session_state["resolution_check_mode"] = False
                     flag_modified(chat_session, "session_state")
                     db.commit()
                     
-                    logger.info(f"✓ Ticket created successfully: {ticket_result.get('ticket_no')}")
+                    logger.info(f"✓ Ticket created: {ticket_result.get('ticket_no')}")
                     return (
                         f"✅ Ticket created: {ticket_result.get('ticket_no')}\n"
-                        f"Category: {ticket_result.get('inferred_category')}\n\n"
-                        f"The issue is being analyzed. You'll receive updates as we work on it."
+                        f"🏷️ Category: {ticket_result.get('inferred_category')}\n\n"
+                        f"The issue is being analyzed. You'll receive updates. 🚀"
                     )
                 
                 except Exception as e:
-                    logger.error(f"Error creating ticket: {e}", exc_info=True)
+                    logger.error(f"Error creating ticket: {e}")
                     chat_session.session_state["waiting_for_confirmation"] = False
                     flag_modified(chat_session, "session_state")
                     db.commit()
                     return f"❌ Failed to create ticket: {str(e)}"
             
+            # Check for decline
             elif response_lower in ["no", "n", "cancel", "skip"]:
-                # User declined
                 logger.info("User declined ticket creation")
                 chat_session.session_state["waiting_for_confirmation"] = False
                 chat_session.session_state["pending_issue"] = None
@@ -219,15 +438,14 @@ async def _handle_text_message(
                 return "✓ Cancelled. Send another message to get started."
             
             else:
-                logger.info(f"Invalid confirmation response: {text}")
                 return (
-                    "Please confirm by replying:\n"
+                    "Please confirm:\n"
                     "✅ Yes / Confirm / Create\n"
                     "❌ No / Cancel / Skip"
                 )
         
         # ============================================================
-        # NORMAL STATE: User is sending a message
+        # NORMAL STATE: User is sending a regular message
         # ============================================================
         
         # Special commands
@@ -250,9 +468,10 @@ async def _handle_text_message(
             
             return _format_search_results(results)
         
-        # Regular message handling
+        # ============================================================
+        # NORMAL STATE: Long message - analyze and show similar tickets
+        # ============================================================
         if len(text) >= 20:
-            # Long message - analyze and ask for confirmation
             logger.info(f"Long message ({len(text)} chars): analyzing...")
             try:
                 analysis = chat_ticket_service.analyze_issue_for_chat(
@@ -260,47 +479,133 @@ async def _handle_text_message(
                     issue_description=text
                 )
                 
-                logger.info(f"Analysis complete: category={analysis.get('inferred_category')}, solutions={len(analysis.get('similar_solutions', []))}")
-                
-                # Store for confirmation step
-                chat_session.session_state["waiting_for_confirmation"] = True
-                chat_session.session_state["pending_issue"] = text
-                chat_session.session_state["pending_analysis"] = analysis
-                flag_modified(chat_session, "session_state")
-                db.commit()
-                
-                # Build response with analysis and solutions
                 inferred_category = analysis.get("inferred_category", "other")
-                similar_solutions = analysis.get("similar_solutions", [])
-                adaptive_threshold = analysis.get("adaptive_threshold")
+                adaptive_threshold = analysis.get("adaptive_threshold", 0.5)
+                
+                logger.info(f"Analysis: category={inferred_category}, confidence={adaptive_threshold:.0%}")
                 
                 response = (
-                    f"📋 Issue: {text[:100]}...\n\n"
+                    f"📋 Issue: {text[:80]}...\n\n"
                     f"🏷️ Category: {inferred_category}\n"
-                    f"📊 Confidence threshold: {adaptive_threshold:.0%}\n\n"
+                    f"📊 Confidence: {adaptive_threshold:.0%}\n\n"
                 )
                 
-                # Show similar solutions if found
-                if similar_solutions:
-                    response += "📚 Similar solutions found:\n"
-                    for i, sol in enumerate(similar_solutions, 1):
-                        similarity_pct = int(sol.get("similarity_score", 0) * 100)
-                        response += (
-                            f"\n{i}. {sol.get('ticket_no')} - {sol.get('subject')}\n"
-                            f"   Category: {sol.get('category')} ({similarity_pct}% match)\n"
+                # Get similar tickets by category
+                similar_tickets_detailed = TicketResolutionService.get_similar_tickets_with_metadata(
+                    ticket_id=None,
+                    company_id=str(chat_session.company_id),
+                    limit=3,
+                    min_score=70,
+                    db=db,
+                    category_filter=inferred_category
+                )
+                
+                if similar_tickets_detailed:
+                    logger.info(f"Found {len(similar_tickets_detailed)} similar tickets")
+                    
+                    # Filter out empty/invalid tickets
+                    valid_tickets = [t for t in similar_tickets_detailed if t.get("ticket_no") and t.get("ticket_no") != "N/A"]
+                    
+                    if not valid_tickets:
+                        logger.warning("No valid tickets after filtering, creating ticket with inferred category")
+                        # No valid tickets - create ticket directly with inferred category
+                        ticket = await _create_ticket_with_retry(
+                            chat_ticket_service=chat_ticket_service,
+                            chat_session_id=chat_session.id,
+                            issue_description=text,
+                            inferred_category=inferred_category,
+                            db=db,
+                            max_retries=3
                         )
-                    response += "\n"
+                        
+                        if not ticket:
+                            return "❌ Failed to create ticket after multiple attempts. Please try again."
+                        
+                        # Clear all states
+                        chat_session.session_state["resolution_check_mode"] = False
+                        chat_session.session_state["pending_issue"] = None
+                        chat_session.session_state["pending_analysis"] = None
+                        flag_modified(chat_session, "session_state")
+                        db.commit()
+                        
+                        return (
+                            f"✅ **Ticket Created!**\n\n"
+                            f"🎫 Ticket Number: **{ticket.get('ticket_no')}**\n"
+                            f"📌 Subject: {text[:80]}...\n"
+                            f"📂 Category: {inferred_category}\n"
+                            f"📊 Confidence: {adaptive_threshold:.0%}\n\n"
+                            f"Your support request has been submitted. Our team will review it shortly.\n\n"
+                            f"Is there anything else I can help you with?"
+                        )
+                    
+                    logger.info(f"Found {len(valid_tickets)} valid similar tickets")
+                    
+                    # Cache tickets
+                    TicketResolutionService.cache_similar_tickets_for_session(
+                        str(chat_session.id),
+                        valid_tickets
+                    )
+                    
+                    # Store metadata refs
+                    ticket_refs = [
+                        {
+                            "ticket_no": t["ticket_no"],
+                            "similarity_score": t["similarity_score"],
+                            "ticket_id": t["ticket_id"]
+                        }
+                        for t in valid_tickets
+                    ]
+                    
+                    chat_session.session_state["similar_ticket_refs"] = ticket_refs
+                    chat_session.session_state["resolution_check_mode"] = True
+                    chat_session.session_state["pending_issue"] = text
+                    chat_session.session_state["pending_analysis"] = {
+                        "inferred_category": inferred_category,
+                        "adaptive_threshold": adaptive_threshold
+                    }
+                    flag_modified(chat_session, "session_state")
+                    db.commit()
+                    
+                    # Format and show ticket list
+                    similar_msg = TicketResolutionService.format_similar_tickets_for_telegram(
+                        valid_tickets
+                    )
+                    response += similar_msg
+                
                 else:
-                    response += "🔍 No existing solutions found.\n\n"
+                    logger.info("No similar tickets found, creating ticket with inferred category")
+                    # No similar tickets - create ticket directly with inferred category
+                    ticket = await _create_ticket_with_retry(
+                        chat_ticket_service=chat_ticket_service,
+                        chat_session_id=chat_session.id,
+                        issue_description=text,
+                        inferred_category=inferred_category,
+                        db=db,
+                        max_retries=3
+                    )
+                    
+                    if not ticket:
+                        return "❌ Failed to create ticket after multiple attempts. Please try again."
+                    
+                    # Clear all states
+                    chat_session.session_state["resolution_check_mode"] = False
+                    chat_session.session_state["pending_issue"] = None
+                    chat_session.session_state["pending_analysis"] = None
+                    flag_modified(chat_session, "session_state")
+                    db.commit()
+                    
+                    return (
+                        f"✅ **Ticket Created!**\n\n"
+                        f"🎫 Ticket Number: **{ticket.get('ticket_no')}**\n"
+                        f"📌 Subject: {text[:80]}...\n"
+                        f"📂 Category: {inferred_category}\n"
+                        f"📊 Confidence: {adaptive_threshold:.0%}\n\n"
+                        f"Your support request has been submitted. Our team will review it shortly.\n\n"
+                        f"Is there anything else I can help you with?"
+                    )
                 
-                response += "Should I create a ticket for this issue?\nReply: yes or no"
-                
-                logger.info(f"Sending analysis response to user")
                 return response
             
-            except ValidationError as e:
-                logger.warning(f"Validation error: {e}")
-                return f"❌ {str(e)}"
             except Exception as e:
                 logger.error(f"Error analyzing issue: {e}", exc_info=True)
                 return "❌ Error analyzing issue. Please try again."
@@ -317,13 +622,13 @@ async def _handle_text_message(
             if results:
                 response = "📚 Similar solutions found:\n"
                 response += _format_search_results(results)
-                response += "\n\nSend a longer message (20+ chars) to create a new ticket."
+                response += "\n\nSend a longer message (20+ chars) for more options."
                 return response
             else:
-                return "No similar solutions found. Send a longer message to create a ticket."
+                return "No solutions found. Send a longer message to explore options."
     
     except Exception as e:
-        logger.error(f"Error handling text message: {e}")
+        logger.error(f"Error handling text message: {e}", exc_info=True)
         return "❌ Error processing message. Please try again."
 
 
@@ -333,7 +638,7 @@ async def _handle_photo_message(
     message: Dict,
     db: Session
 ) -> Optional[str]:
-    """Handle photo messages from Telegram with stateful confirmation"""
+    """Handle photo messages from Telegram"""
     
     try:
         # Get largest photo
@@ -341,15 +646,15 @@ async def _handle_photo_message(
         file_id = largest_photo.get("file_id")
         
         if not file_id:
-            return "❌ Could not process photo"
+            return "Could not process photo"
         
-        # Download photo from Telegram
+        # Download photo
         file_path = await _download_telegram_file(file_id)
         
         if not file_path:
-            return "❌ Failed to download photo"
+            return "Failed to download photo"
         
-        # Store in ChatAttachment with auto-expiry
+        # Store attachment
         expires_at = datetime.utcnow() + timedelta(hours=24)
         
         chat_attachment = ChatAttachment(
@@ -368,7 +673,7 @@ async def _handle_photo_message(
         # Get caption if provided
         caption = message.get("caption", "").strip()
         
-        # If caption provided and long enough, analyze and ask for confirmation
+        # If caption provided and long enough, analyze
         if caption and len(caption) >= 10:
             logger.info(f"Photo with caption ({len(caption)} chars): analyzing...")
             try:
@@ -377,83 +682,150 @@ async def _handle_photo_message(
                 analysis = chat_ticket_service.analyze_issue_for_chat(
                     chat_session_id=chat_session.id,
                     issue_description=issue_description,
-                    image_path=file_path  # Pass the image path
+                    image_path=file_path
                 )
                 
-                logger.info(f"Analysis complete: category={analysis.get('inferred_category')}, solutions={len(analysis.get('similar_solutions', []))}")
-                
-                # Store for confirmation step
-                chat_session.session_state = chat_session.session_state or {}
-                chat_session.session_state["waiting_for_confirmation"] = True
-                chat_session.session_state["pending_issue"] = issue_description
-                chat_session.session_state["pending_analysis"] = analysis
-                chat_session.session_state["pending_attachment_id"] = str(chat_attachment.id)
-                flag_modified(chat_session, "session_state")
-                db.commit()
-                
-                # Build response with analysis and solutions
                 inferred_category = analysis.get("inferred_category", "other")
-                similar_solutions = analysis.get("similar_solutions", [])
-                adaptive_threshold = analysis.get("adaptive_threshold")
+                adaptive_threshold = analysis.get("adaptive_threshold", 0.5)
                 
-                response = (
-                    f"📷 Photo received with caption: {caption[:100]}...\n\n"
-                    f"🏷️ Category: {inferred_category}\n"
-                    f"📊 Confidence threshold: {adaptive_threshold:.0%}\n\n"
+                response = f"Issue: {caption[:80]}...\n\nCategory: {inferred_category}\nConfidence: {adaptive_threshold:.0%}\n\n"
+                
+                # Get similar tickets
+                similar_tickets_detailed = TicketResolutionService.get_similar_tickets_with_metadata(
+                    ticket_id=None,
+                    company_id=str(chat_session.company_id),
+                    limit=3,
+                    min_score=70,
+                    db=db,
+                    category_filter=inferred_category
                 )
                 
-                # Show similar solutions if found
-                if similar_solutions:
-                    response += "📚 Similar solutions found:\n"
-                    for i, sol in enumerate(similar_solutions, 1):
-                        similarity_pct = int(sol.get("similarity_score", 0) * 100)
-                        response += (
-                            f"\n{i}. {sol.get('ticket_no')} - {sol.get('subject')}\n"
-                            f"   Category: {sol.get('category')} ({similarity_pct}% match)\n"
+                if similar_tickets_detailed:
+                    valid_tickets = [t for t in similar_tickets_detailed if t.get("ticket_no") and t.get("ticket_no") != "N/A"]
+                    
+                    if valid_tickets:
+                        logger.info(f"Found {len(valid_tickets)} valid similar tickets")
+                        
+                        # Cache tickets
+                        TicketResolutionService.cache_similar_tickets_for_session(
+                            str(chat_session.id),
+                            valid_tickets
                         )
-                    response += "\n"
+                        
+                        ticket_refs = [
+                            {
+                                "ticket_no": t["ticket_no"],
+                                "similarity_score": t["similarity_score"],
+                                "ticket_id": t["ticket_id"]
+                            }
+                            for t in valid_tickets
+                        ]
+                        
+                        chat_session.session_state["similar_ticket_refs"] = ticket_refs
+                        chat_session.session_state["resolution_check_mode"] = True
+                        chat_session.session_state["pending_issue"] = issue_description
+                        chat_session.session_state["pending_analysis"] = {
+                            "inferred_category": inferred_category,
+                            "adaptive_threshold": adaptive_threshold
+                        }
+                        flag_modified(chat_session, "session_state")
+                        db.commit()
+                        
+                        similar_msg = TicketResolutionService.format_similar_tickets_for_telegram(
+                            valid_tickets
+                        )
+                        response += similar_msg
+                    else:
+                        # No valid tickets - create ticket with inferred category
+                        try:
+                            ticket = chat_ticket_service.create_ticket_from_chat(
+                                chat_session_id=chat_session.id,
+                                issue_description=issue_description,
+                                inferred_category=inferred_category
+                            )
+                            
+                            # Clear all states
+                            chat_session.session_state["resolution_check_mode"] = False
+                            chat_session.session_state["pending_issue"] = None
+                            chat_session.session_state["pending_analysis"] = None
+                            flag_modified(chat_session, "session_state")
+                            db.commit()
+                            
+                            response += (
+                                f"🔍 No existing solutions found.\n\n"
+                                f"✅ **Ticket Created!**\n\n"
+                                f"🎫 Ticket Number: **{ticket.get('ticket_no')}**\n"
+                                f"📌 Subject: {issue_description[:80]}...\n"
+                                f"📂 Category: {inferred_category}\n\n"
+                                f"Your support request has been submitted. Our team will review it shortly."
+                            )
+                        except Exception as e:
+                            logger.error(f"Error creating ticket: {e}", exc_info=True)
+                            response += f"Error creating ticket: {str(e)}"
                 else:
-                    response += "🔍 No existing solutions found.\n\n"
+                    # No similar tickets - create ticket with inferred category
+                    try:
+                        ticket = chat_ticket_service.create_ticket_from_chat(
+                            chat_session_id=chat_session.id,
+                            issue_description=issue_description,
+                            inferred_category=inferred_category
+                        )
+                        
+                        # Clear all states
+                        chat_session.session_state["resolution_check_mode"] = False
+                        chat_session.session_state["pending_issue"] = None
+                        chat_session.session_state["pending_analysis"] = None
+                        flag_modified(chat_session, "session_state")
+                        db.commit()
+                        
+                        response += (
+                            f"🔍 No existing solutions found.\n\n"
+                            f"✅ **Ticket Created!**\n\n"
+                            f"🎫 Ticket Number: **{ticket.get('ticket_no')}**\n"
+                            f"📌 Subject: {issue_description[:80]}...\n"
+                            f"📂 Category: {inferred_category}\n\n"
+                            f"Your support request has been submitted. Our team will review it shortly."
+                        )
+                    except Exception as e:
+                        logger.error(f"Error creating ticket: {e}", exc_info=True)
+                        response += f"Error creating ticket: {str(e)}"
                 
-                response += "Should I create a ticket for this issue?\nReply: yes or no"
-                
-                logger.info(f"Sending analysis response to user")
                 return response
             
             except Exception as e:
-                logger.error(f"Error analyzing photo with caption: {e}", exc_info=True)
-                return "❌ Error analyzing issue. Please try again."
+                logger.error(f"Error analyzing photo: {e}", exc_info=True)
+                return "Error analyzing photo. Please try again."
         
         else:
-            # Photo without caption or short caption
-            return "✓ Photo received. Please describe your issue and I'll create a ticket.\n(Send a message with 20+ characters)"
+            return "Photo received. Please describe your issue and I'll create a ticket."
     
     except Exception as e:
         logger.error(f"Error handling photo message: {e}")
-        return "❌ Error processing photo. Please try again."
-    
+        return "Error processing photo. Please try again."
+
+
 async def _handle_document_message(
     document: dict,
     chat_session: ChatSession,
     message: Dict,
     db: Session
 ) -> Optional[str]:
-    """Handle document messages from Telegram with stateful confirmation"""
+    """Handle document messages from Telegram"""
     
     try:
         file_id = document.get("file_id")
         file_name = document.get("file_name", "document")
         
         if not file_id:
-            return "❌ Could not process document"
+            return "Could not process document"
         
-        # Download document from Telegram
+        # Download document
         file_path = await _download_telegram_file(file_id)
         
         if not file_path:
-            return "❌ Failed to download document"
+            return "Failed to download document"
         
-        # Store in ChatAttachment with auto-expiry
+        # Store attachment
         expires_at = datetime.utcnow() + timedelta(hours=24)
         
         chat_attachment = ChatAttachment(
@@ -472,7 +844,7 @@ async def _handle_document_message(
         # Get caption if provided
         caption = message.get("caption", "").strip()
         
-        # If caption provided and long enough, analyze and ask for confirmation
+        # If caption provided and long enough, analyze
         if caption and len(caption) >= 10:
             logger.info(f"Document with caption ({len(caption)} chars): analyzing...")
             try:
@@ -484,58 +856,123 @@ async def _handle_document_message(
                     image_path=file_path
                 )
                 
-                logger.info(f"Analysis complete: category={analysis.get('inferred_category')}, solutions={len(analysis.get('similar_solutions', []))}")
-                
-                # Store for confirmation step
-                chat_session.session_state = chat_session.session_state or {}
-                chat_session.session_state["waiting_for_confirmation"] = True
-                chat_session.session_state["pending_issue"] = issue_description
-                chat_session.session_state["pending_analysis"] = analysis
-                chat_session.session_state["pending_attachment_id"] = str(chat_attachment.id)
-                flag_modified(chat_session, "session_state")
-                db.commit()
-                
-                # Build response with analysis and solutions
                 inferred_category = analysis.get("inferred_category", "other")
-                similar_solutions = analysis.get("similar_solutions", [])
-                adaptive_threshold = analysis.get("adaptive_threshold")
+                adaptive_threshold = analysis.get("adaptive_threshold", 0.5)
                 
-                response = (
-                    f"📄 Document received: {file_name}\n"
-                    f"Caption: {caption[:100]}...\n\n"
-                    f"🏷️ Category: {inferred_category}\n"
-                    f"📊 Confidence threshold: {adaptive_threshold:.0%}\n\n"
+                response = f"Issue: {caption[:80]}...\n\nCategory: {inferred_category}\nConfidence: {adaptive_threshold:.0%}\n\n"
+                
+                # Get similar tickets
+                similar_tickets_detailed = TicketResolutionService.get_similar_tickets_with_metadata(
+                    ticket_id=None,
+                    company_id=str(chat_session.company_id),
+                    limit=3,
+                    min_score=70,
+                    db=db,
+                    category_filter=inferred_category
                 )
                 
-                # Show similar solutions if found
-                if similar_solutions:
-                    response += "📚 Similar solutions found:\n"
-                    for i, sol in enumerate(similar_solutions, 1):
-                        similarity_pct = int(sol.get("similarity_score", 0) * 100)
-                        response += (
-                            f"\n{i}. {sol.get('ticket_no')} - {sol.get('subject')}\n"
-                            f"   Category: {sol.get('category')} ({similarity_pct}% match)\n"
+                if similar_tickets_detailed:
+                    valid_tickets = [t for t in similar_tickets_detailed if t.get("ticket_no") and t.get("ticket_no") != "N/A"]
+                    
+                    if valid_tickets:
+                        logger.info(f"Found {len(valid_tickets)} valid similar tickets")
+                        
+                        # Cache tickets
+                        TicketResolutionService.cache_similar_tickets_for_session(
+                            str(chat_session.id),
+                            valid_tickets
                         )
-                    response += "\n"
+                        
+                        ticket_refs = [
+                            {
+                                "ticket_no": t["ticket_no"],
+                                "similarity_score": t["similarity_score"],
+                                "ticket_id": t["ticket_id"]
+                            }
+                            for t in valid_tickets
+                        ]
+                        
+                        chat_session.session_state["similar_ticket_refs"] = ticket_refs
+                        chat_session.session_state["resolution_check_mode"] = True
+                        chat_session.session_state["pending_issue"] = issue_description
+                        chat_session.session_state["pending_analysis"] = {
+                            "inferred_category": inferred_category,
+                            "adaptive_threshold": adaptive_threshold
+                        }
+                        flag_modified(chat_session, "session_state")
+                        db.commit()
+                        
+                        similar_msg = TicketResolutionService.format_similar_tickets_for_telegram(
+                            valid_tickets
+                        )
+                        response += similar_msg
+                    else:
+                        # No valid tickets - create ticket with inferred category
+                        try:
+                            ticket = chat_ticket_service.create_ticket_from_chat(
+                                chat_session_id=chat_session.id,
+                                issue_description=issue_description,
+                                inferred_category=inferred_category
+                            )
+                            
+                            # Clear all states
+                            chat_session.session_state["resolution_check_mode"] = False
+                            chat_session.session_state["pending_issue"] = None
+                            chat_session.session_state["pending_analysis"] = None
+                            flag_modified(chat_session, "session_state")
+                            db.commit()
+                            
+                            response += (
+                                f"🔍 No existing solutions found.\n\n"
+                                f"✅ **Ticket Created!**\n\n"
+                                f"🎫 Ticket Number: **{ticket.get('ticket_no')}**\n"
+                                f"📌 Subject: {issue_description[:80]}...\n"
+                                f"📂 Category: {inferred_category}\n\n"
+                                f"Your support request has been submitted. Our team will review it shortly."
+                            )
+                        except Exception as e:
+                            logger.error(f"Error creating ticket: {e}", exc_info=True)
+                            response += f"Error creating ticket: {str(e)}"
                 else:
-                    response += "🔍 No existing solutions found.\n\n"
+                    # No similar tickets - create ticket with inferred category
+                    try:
+                        ticket = chat_ticket_service.create_ticket_from_chat(
+                            chat_session_id=chat_session.id,
+                            issue_description=issue_description,
+                            inferred_category=inferred_category
+                        )
+                        
+                        # Clear all states
+                        chat_session.session_state["resolution_check_mode"] = False
+                        chat_session.session_state["pending_issue"] = None
+                        chat_session.session_state["pending_analysis"] = None
+                        flag_modified(chat_session, "session_state")
+                        db.commit()
+                        
+                        response += (
+                            f"🔍 No existing solutions found.\n\n"
+                            f"✅ **Ticket Created!**\n\n"
+                            f"🎫 Ticket Number: **{ticket.get('ticket_no')}**\n"
+                            f"📌 Subject: {issue_description[:80]}...\n"
+                            f"📂 Category: {inferred_category}\n\n"
+                            f"Your support request has been submitted. Our team will review it shortly."
+                        )
+                    except Exception as e:
+                        logger.error(f"Error creating ticket: {e}", exc_info=True)
+                        response += f"Error creating ticket: {str(e)}"
                 
-                response += "Should I create a ticket for this issue?\nReply: yes or no"
-                
-                logger.info(f"Sending analysis response to user")
                 return response
             
             except Exception as e:
-                logger.error(f"Error analyzing document with caption: {e}", exc_info=True)
-                return "❌ Error analyzing issue. Please try again."
+                logger.error(f"Error analyzing document: {e}", exc_info=True)
+                return "Error analyzing document. Please try again."
         
         else:
-            # Document without caption or short caption
-            return "✓ Document received. Please describe your issue and I'll create a ticket.\n(Send a message with 20+ characters)"
+            return "Document received. Please describe your issue and I'll create a ticket."
     
     except Exception as e:
         logger.error(f"Error handling document message: {e}")
-        return "❌ Error processing document. Please try again."
+        return "Error processing document. Please try again."
 
 
 @router.get("/session/{session_id}")
@@ -579,11 +1016,7 @@ async def search_solutions(
     min_similarity: float = 0.55,
     db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
-    """
-    Search for solutions (non-webhook endpoint for testing).
-    
-    Used for direct API calls instead of via Telegram.
-    """
+    """Search for solutions (non-webhook endpoint for testing)"""
     
     try:
         company = db.query(Company).filter(Company.id == UUID(company_id)).first()
@@ -616,12 +1049,7 @@ async def record_search_feedback(
     rating: Optional[int] = None,
     db: Session = Depends(get_db)
 ) -> Dict[str, str]:
-    """
-    Record user feedback about search results.
-    
-    Used by AdaptiveThresholdService to learn what thresholds work best.
-    This data improves category classification over time.
-    """
+    """Record user feedback about search results"""
     
     try:
         ticket = db.query(Ticket).filter(Ticket.id == UUID(ticket_id)).first()
@@ -653,6 +1081,177 @@ async def record_search_feedback(
         raise HTTPException(status_code=400, detail="Invalid ticket ID")
 
 
+@router.post("/init")
+@invalidate_on_mutation(tags=["chat:sessions"])
+async def init_chat_session(
+    user_id: str,
+    telegram_chat_id: str,
+    admin_payload: dict = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
+    """Create a chat session for a user (admin only)"""
+    try:
+        # Get the user
+        user = db.query(User).filter(User.id == UUID(user_id)).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Check if session already exists
+        existing = db.query(ChatSession).filter(
+            ChatSession.user_id == UUID(user_id)
+        ).first()
+        
+        if existing:
+            # Update existing session
+            old_telegram_id = existing.telegram_chat_id
+            existing.telegram_chat_id = str(telegram_chat_id)
+            db.commit()
+            
+            logger.info(
+                f"✓ Chat session updated: user={user.email}, "
+                f"telegram={old_telegram_id} → {telegram_chat_id}"
+            )
+            
+            return {
+                "status": "updated",
+                "session_id": str(existing.id),
+                "user": user.email,
+                "company": user.company.name,
+                "telegram_chat_id": str(existing.telegram_chat_id),
+                "message": f"Chat session updated for {user.email}"
+            }
+        
+        # Create new session
+        chat_session = ChatSession(
+            user_id=UUID(user_id),
+            company_id=user.company_id,
+            telegram_chat_id=str(telegram_chat_id),
+            session_state={
+                "initialized_by_admin": admin_payload.get("id"),
+                "initialized_at": to_iso_date(datetime.utcnow()),
+                "resolution_check_mode": False,
+                "ticket_details_mode": False,
+                "awaiting_category": False,
+                "similar_ticket_refs": None,
+                "waiting_for_confirmation": False,
+                "pending_issue": None,
+                "pending_analysis": None
+            }
+        )
+        
+        db.add(chat_session)
+        db.commit()
+        
+        logger.info(f"✓ Chat session created: user={user.email}, company={user.company.name}")
+        
+        return {
+            "status": "created",
+            "session_id": str(chat_session.id),
+            "user": user.email,
+            "company": user.company.name,
+            "telegram_chat_id": str(telegram_chat_id),
+            "message": f"✓ Chat session created for {user.email}"
+        }
+    
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid ID format: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error creating chat session: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/sessions")
+@cache_endpoint(ttl=300, tag="chat:sessions")
+async def list_chat_sessions(
+    admin_payload: dict = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
+    """List all chat sessions (admin only)"""
+    try:
+        sessions = db.query(ChatSession).all()
+        
+        return {
+            "total": len(sessions),
+            "sessions": [
+                {
+                    "session_id": str(s.id),
+                    "user": s.user.email,
+                    "company": s.user.company.name,
+                    "telegram_chat_id": s.telegram_chat_id,
+                    "is_active": s.is_active,
+                    "created_at": to_iso_date(s.created_at),
+                    "last_message_at": to_iso_date(s.last_message_at)
+                }
+                for s in sessions
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Error listing sessions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/sessions/{session_id}")
+@invalidate_on_mutation(tags=["chat:sessions"])
+async def delete_chat_session(
+    session_id: str,
+    admin_payload: dict = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+) -> Dict[str, str]:
+    """Delete a chat session (admin only)"""
+    try:
+        session = db.query(ChatSession).filter(
+            ChatSession.id == UUID(session_id)
+        ).first()
+        
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        user_email = session.user.email
+        
+        # Delete attachments
+        attachments = db.query(ChatAttachment).filter(
+            ChatAttachment.chat_session_id == UUID(session_id)
+        ).all()
+        
+        for attachment in attachments:
+            db.delete(attachment)
+        
+        # Delete session
+        db.delete(session)
+        db.commit()
+        
+        logger.info(f"Chat session deleted: user={user_email}")
+        
+        return {
+            "status": "deleted",
+            "user": user_email,
+            "message": f"Chat session deleted for {user_email}"
+        }
+    
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid session ID")
+
+
+@router.post("/debug-search")
+async def debug_search_endpoint(
+    query: str,
+    company_id: str,
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
+    """Debug endpoint to test search"""
+    try:
+        debug_result = chat_search_service.debug_search(
+            query=query,
+            company_id=UUID(company_id),
+            min_similarity=0.0
+        )
+        logger.info(f"DEBUG SEARCH: {json.dumps(debug_result, indent=2)}")
+        return debug_result
+    except Exception as e:
+        logger.error(f"Debug search error: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
 # ==================== HELPER FUNCTIONS ====================
 
 def _get_help_message() -> str:
@@ -663,13 +1262,12 @@ Commands:
 /help - Show this message
 /status - View your chat session status
 /search <query> - Search for similar issues
-/ticket <description> - Create a new ticket
 
 Or just send a message:
 • Short message (< 20 chars) → Search for similar issues
-• Long message (≥ 20 chars) → Create a ticket + search
+• Long message (≥ 20 chars) → Show similar tickets + create new
 
-📸 You can also share screenshots - add a description for better results!
+📸 You can also share screenshots - add a description!
 """
 
 
@@ -686,7 +1284,7 @@ Status: {status}
 Created: {chat_session.created_at.strftime('%Y-%m-%d %H:%M:%S')}
 Last message: {chat_session.last_message_at.strftime('%Y-%m-%d %H:%M:%S')}
 
-Session state: {json.dumps(chat_session.session_state or {}, indent=2)}
+Session state keys: {list(chat_session.session_state.keys()) if chat_session.session_state else 'empty'}
 """
 
 
@@ -724,7 +1322,6 @@ async def _send_telegram_message(chat_id: int, text: str) -> bool:
                 json={
                     "chat_id": chat_id,
                     "text": text,
-
                 },
                 timeout=10.0
             )
@@ -790,189 +1387,74 @@ async def _download_telegram_file(file_id: str) -> Optional[str]:
         logger.error(f"Error downloading Telegram file: {e}")
         return None
     
-@router.post("/init")
-@invalidate_on_mutation(tags=["chat:sessions"])
-async def init_chat_session(
-    user_id: str,
-    telegram_chat_id: str,
-    admin_payload: dict = Depends(get_current_admin),  # Only admins can create sessions
-    db: Session = Depends(get_db)
-) -> Dict[str, Any]:
+async def _create_ticket_with_retry(
+    chat_ticket_service: ChatTicketService,
+    chat_session_id: UUID,
+    issue_description: str,
+    inferred_category: str,
+    db: Session,
+    max_retries: int = 3
+) -> Optional[Dict[str, Any]]:
     """
-    Create a chat session for a user.
+    Create ticket with retry logic for duplicate ticket_no errors.
     
-    Only admins can initialize chat sessions for users.
-    Called from admin UI to grant user access to Telegram chat.
-    
-    Requires: Admin JWT token
-    
-    Args:
-        user_id: UUID of the user to enable chat for
-        telegram_chat_id: The Telegram chat ID to link
-        admin_payload: Authenticated admin info from JWT
-        
-    Returns:
-        Session details with success message
+    Uses TicketCreationService.get_next_ticket_number() for sequential numbering.
+    Handles race conditions with database-level locking and exponential backoff.
     """
-    try:
-        # Get the user
-        user = db.query(User).filter(User.id == UUID(user_id)).first()
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        # Check if session already exists for this user
-        existing = db.query(ChatSession).filter(
-            ChatSession.user_id == UUID(user_id)
-        ).first()
-        
-        if existing:
-            # Session exists - update telegram_chat_id if different
-            old_telegram_id = existing.telegram_chat_id
-            existing.telegram_chat_id = str(telegram_chat_id)
-            db.commit()
+    
+    import asyncio
+    from services.ticket_creation_service import TicketCreationService
+    
+    for attempt in range(max_retries):
+        try:
+            # Get next sequential ticket number (uses advisory lock)
+            ticket_no = TicketCreationService.get_next_ticket_number()
+            logger.info(f"Attempt {attempt + 1}: Generated ticket number {ticket_no}")
             
-            logger.info(
-                f"✓ Chat session updated by admin: user={user.email}, "
-                f"telegram={old_telegram_id} → {telegram_chat_id}"
+            # Set transaction isolation level
+            db.execute("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
+            
+            # Create ticket using the generated number
+            ticket = chat_ticket_service.create_ticket_from_chat(
+                chat_session_id=chat_session_id,
+                issue_description=issue_description,
+                inferred_category=inferred_category,
+                ticket_no=ticket_no  # Pass the sequential number
             )
             
-            return {
-                "status": "updated",
-                "session_id": str(existing.id),
-                "user": user.email,
-                "company": user.company.name,
-                "telegram_chat_id": str(existing.telegram_chat_id),
-                "message": f"Chat session updated for {user.email}"
-            }
+            if not ticket:
+                logger.error(f"Ticket creation returned None despite no exception")
+                db.rollback()
+                # Retry on unexpected None
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(0.1 * (2 ** attempt))
+                    continue
+                return None
+            
+            logger.info(f"✓ Ticket created on attempt {attempt + 1}: {ticket.get('ticket_no')}")
+            return ticket
         
-        # Create new session for this user
-        chat_session = ChatSession(
-            user_id=UUID(user_id),
-            company_id=user.company_id,
-            telegram_chat_id=str(telegram_chat_id),
-            session_state={"initialized_by_admin": admin_payload.get("id"), "initialized_at": to_iso_date(datetime.utcnow())}
-        )
-        
-        db.add(chat_session)
-        db.commit()
-        
-        logger.info(
-            f"✓ Chat session created by admin: user={user.email}, "
-            f"company={user.company.name}, telegram={telegram_chat_id}, "
-            f"admin={admin_payload.get('email')}"
-        )
-        
-        return {
-            "status": "created",
-            "session_id": str(chat_session.id),
-            "user": user.email,
-            "company": user.company.name,
-            "telegram_chat_id": str(telegram_chat_id),
-            "message": f"✓ Chat session created for {user.email}. They can now use Telegram."
-        }
+        except Exception as e:
+            error_msg = str(e)
+            logger.warning(f"Attempt {attempt + 1} failed: {error_msg}")
+            
+            db.rollback()
+            
+            # Check if it's a duplicate ticket_no error (shouldn't happen with lock, but handle it)
+            if "duplicate key value violates unique constraint" in error_msg and "ticket_no" in error_msg:
+                logger.warning(f"Duplicate ticket_no detected on attempt {attempt + 1}")
+                if attempt < max_retries - 1:
+                    # Exponential backoff: 0.1s, 0.2s, 0.4s
+                    wait_time = 0.1 * (2 ** attempt)
+                    logger.info(f"Retrying in {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                    continue
+                else:
+                    logger.error(f"Failed after {max_retries} attempts")
+                    return None
+            else:
+                # Different error - log and don't retry
+                logger.error(f"Non-retryable error: {error_msg}")
+                return None
     
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid ID format: {str(e)}")
-    except Exception as e:
-        logger.error(f"Error creating chat session: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/sessions")
-@cache_endpoint(ttl=300, tag="chat:sessions")
-async def list_chat_sessions(
-    admin_payload: dict = Depends(get_current_admin),
-    db: Session = Depends(get_db)
-) -> Dict[str, Any]:
-    """
-    List all chat sessions (admin only).
-    
-    Used to manage user chat access from admin dashboard.
-    """
-    try:
-        sessions = db.query(ChatSession).all()
-        
-        return {
-            "total": len(sessions),
-            "sessions": [
-                {
-                    "session_id": str(s.id),
-                    "user": s.user.email,
-                    "company": s.user.company.name,
-                    "telegram_chat_id": s.telegram_chat_id,
-                    "is_active": s.is_active,
-                    "created_at": to_iso_date(s.created_at),
-                    "last_message_at": to_iso_date(s.last_message_at)
-                }
-                for s in sessions
-            ]
-        }
-    except Exception as e:
-        logger.error(f"Error listing sessions: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.delete("/sessions/{session_id}")
-@invalidate_on_mutation(tags=["chat:sessions"])
-async def delete_chat_session(
-    session_id: str,
-    admin_payload: dict = Depends(get_current_admin),
-    db: Session = Depends(get_db)
-) -> Dict[str, str]:
-    """
-    Delete a chat session (admin only).
-    
-    Permanently removes the chat session and all associated attachments.
-    """
-    try:
-        session = db.query(ChatSession).filter(
-            ChatSession.id == UUID(session_id)
-        ).first()
-        
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
-        
-        user_email = session.user.email
-        
-        # Delete associated attachments first
-        attachments = db.query(ChatAttachment).filter(
-            ChatAttachment.chat_session_id == UUID(session_id)
-        ).all()
-        
-        for attachment in attachments:
-            db.delete(attachment)
-        
-        # Delete the session
-        db.delete(session)
-        db.commit()
-        
-        logger.info(f"Chat session deleted by admin: user={user_email}")
-        
-        return {
-            "status": "deleted",
-            "user": user_email,
-            "message": f"Chat session deleted for {user_email}"
-        }
-    
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid session ID")
-    
-@router.post("/debug-search")
-async def debug_search_endpoint(
-    query: str,
-    company_id: str,
-    db: Session = Depends(get_db)
-) -> Dict[str, Any]:
-    """Debug endpoint to test search without threshold filtering"""
-    try:
-        import json
-        debug_result = chat_search_service.debug_search(
-            query=query,
-            company_id=UUID(company_id),
-            min_similarity=0.0
-        )
-        logger.info(f"DEBUG SEARCH: {json.dumps(debug_result, indent=2)}")
-        return debug_result
-    except Exception as e:
-        logger.error(f"Debug search error: {e}", exc_info=True)
-        return {"error": str(e)}
+    return None

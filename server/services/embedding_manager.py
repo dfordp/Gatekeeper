@@ -17,11 +17,12 @@ from datetime import datetime
 from uuid import UUID
 import uuid as uuid_lib
 
-from core.database import SessionLocal, Embedding
+from core.database import SessionLocal, Embedding, Ticket, SimilarIssues
 from .embedding_api_client import EmbeddingAPIClient
+from .ticket_search_service import TicketSearchService
 from .event_queue import EventQueue, EventType
 from qdrant_client import QdrantClient
-from qdrant_client.models import PointStruct, Distance, VectorParams
+from qdrant_client.models import PointStruct, Distance, VectorParams, Filter, FieldCondition, MatchValue
 from sqlalchemy.orm.attributes import flag_modified
 
 # Setup logging
@@ -837,8 +838,71 @@ class EmbeddingManager:
     
     @staticmethod
     def _find_and_map_similar_tickets(ticket_id: str, company_id: str) -> bool:
-        """Find and map similar tickets based on vector similarity"""
-        # This is a placeholder for the similarity mapping logic
-        # In production, this would use Qdrant or PostgreSQL pgvector extension
-        logger.debug(f"Similarity mapping placeholder for {ticket_id}")
-        return True
+        """Find and map similar tickets based on vector similarity within the same company"""
+        db = SessionLocal()
+        try:
+            new_ticket = db.query(Ticket).filter(Ticket.id == UUID(ticket_id)).first()
+            if not new_ticket:
+                return False
+            
+            # Get new ticket's embedding
+            query = f"{new_ticket.subject} {new_ticket.detailed_description}"
+            embedding_client = EmbeddingAPIClient()
+            new_vector = embedding_client.get_embedding_vector(query)
+            
+            if not new_vector:
+                return False
+            
+            # Search Qdrant for similar tickets in SAME COMPANY ONLY
+            qdrant = TicketSearchService._get_qdrant_client()
+            results = qdrant.search(
+                collection_name="tickets",
+                query_vector=new_vector,
+                query_filter=Filter(
+                    must=[
+                        FieldCondition(
+                            key="company_id",
+                            match=MatchValue(value=company_id)
+                        )
+                    ]
+                ),
+                limit=10,
+                score_threshold=0.5
+            )
+            
+            # Create SimilarIssues links for tickets scoring >= 70
+            similarity_count = 0
+            for result in results:
+                old_ticket_id = result.payload.get("ticket_id")
+                if old_ticket_id == ticket_id:
+                    continue
+                
+                score = int(result.score * 100)  # Convert to 0-100
+                if score >= 70:
+                    # Check if similarity link already exists
+                    existing = db.query(SimilarIssues).filter(
+                        SimilarIssues.newer_ticket_id == UUID(ticket_id),
+                        SimilarIssues.older_ticket_id == UUID(old_ticket_id)
+                    ).first()
+                    
+                    if not existing:
+                        similar = SimilarIssues(
+                            newer_ticket_id=UUID(ticket_id),
+                            older_ticket_id=UUID(old_ticket_id),
+                            similarity_score=score
+                        )
+                        db.add(similar)
+                        similarity_count += 1
+            
+            db.commit()
+            
+            if similarity_count > 0:
+                logger.info(f"✓ Mapped {similarity_count} similar tickets for {ticket_id}")
+            
+            return True
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error mapping similar tickets: {e}")
+            return False
+        finally:
+            db.close()

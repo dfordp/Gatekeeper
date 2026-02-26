@@ -1,7 +1,7 @@
 # session.py - CORRECTED with validation and fixes
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 from enum import Enum
 
 from utils.datetime_utils import to_iso_date
@@ -139,6 +139,12 @@ class SupportSession:
     _environment: Optional[Environment] = None
     _impact: Optional[ImpactLevel] = None
     
+    # Resolution attempt
+    resolution_check_mode: bool = False
+    ticket_selection_mode: bool = False
+    similar_tickets: List[dict] = None
+    selected_ticket_id: str = None
+    temp_ticket_id: str = None
     # File attachments
     attachments: list[str] = field(default_factory=list)
     

@@ -16,7 +16,7 @@ import logging
 import base64
 from typing import Dict, Any, Optional
 from uuid import UUID
-from datetime import datetime
+from datetime import date, datetime
 
 from core.database import SessionLocal, User, Company, Ticket, ChatSession
 from utils.datetime_utils import to_iso_date
@@ -272,116 +272,52 @@ class ChatTicketService:
             logger.warning(f"Vision analysis failed: {e}")
             return None
     
-    def create_ticket_from_chat(
-        self,
-        chat_session_id: UUID,
-        issue_description: str,
-        inferred_category: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """
-        Create a ticket from chat session context.
-        
-        If inferred_category is provided from prior analysis, use it.
-        Otherwise, analyze the issue first to infer category.
-        
-        Returns:
-            {
-                "ticket_id": str,
-                "ticket_no": str,
-                "status": str,
-                "created_at": str,
-                "subject": str,
-                "inferred_category": str,
-                "message": str
-            }
-        """
-        db = SessionLocal()
-        try:
-            # Get chat session
-            chat_session = db.query(ChatSession).filter(
-                ChatSession.id == chat_session_id
-            ).first()
-            
-            if not chat_session:
-                raise NotFoundError("Chat session not found")
-            
-            # Validate user and company
-            user = db.query(User).filter(User.id == chat_session.user_id).first()
-            company = db.query(Company).filter(Company.id == chat_session.company_id).first()
-            
-            if not user or not company:
-                raise NotFoundError("User or company not found for chat session")
-            
-            # Validate issue description
-            if not issue_description or len(issue_description.strip()) < 10:
-                raise ValidationError("Issue description must be at least 10 characters")
-            
-            subject = issue_description[:100]
-            
-            # If category was provided from prior analysis, use it directly
-            if inferred_category:
-                logger.info(f"Using pre-analyzed category: {inferred_category}")
-                ticket_category = inferred_category
-            else:
-                # Otherwise, analyze now (fallback if analysis wasn't done before)
-                try:
-                    analysis = self.analyze_issue_for_chat(
-                        chat_session_id=chat_session_id,
-                        issue_description=issue_description
-                    )
-                    ticket_category = analysis.get("inferred_category", "other")
-                except Exception as e:
-                    logger.warning(f"Failed to analyze issue: {e}, using 'other'")
-                    ticket_category = "other"
-            
-            logger.info(
-                f"Creating ticket: user={user.email}, company={company.name}, "
-                f"category={ticket_category}"
-            )
-            
-            # Create ticket with TicketCreationService
-            ticket_result = TicketCreationService.create_ticket(
-                subject=subject,
-                detailed_description=issue_description,
-                company_id=str(chat_session.company_id),
-                raised_by_user_id=str(chat_session.user_id),
-                summary=issue_description[:200],
-                category=ticket_category,
-                level=None,  # No priority from chat
-                assigned_engineer_id=None,
-                created_by_admin_id=None
-            )
-            
-            # Get created ticket for details
-            created_ticket = db.query(Ticket).filter(
-                Ticket.id == UUID(ticket_result["id"])
-            ).first()
-            
-            return {
-                "ticket_id": str(ticket_result["id"]),
-                "ticket_no": created_ticket.ticket_no,
-                "status": created_ticket.status,
-                "created_at": to_iso_date(created_ticket.created_at),
-                "subject": created_ticket.subject,
-                "inferred_category": ticket_category,
-                "message": f"Ticket {created_ticket.ticket_no} created in '{ticket_category}' category."
-            }
-        
-        except ValidationError as e:
-            logger.warning(f"Validation error: {e}")
-            raise
-        
-        except NotFoundError as e:
-            logger.error(f"Not found error: {e}")
-            raise
-        
-        except Exception as e:
-            logger.error(f"Error creating ticket from chat: {e}")
-            raise
-        
-        finally:
-            db.close()
     
+    def create_ticket_from_chat(
+            self,
+            chat_session_id: UUID,
+            issue_description: str,
+            inferred_category: str,
+        ) -> Optional[Dict[str, Any]]:
+            """
+            Create ticket from chat session.
+            Ticket number is generated atomically by create_ticket() - do NOT pre-generate it.
+            """
+            db = SessionLocal()
+            try:
+                chat_session = db.query(ChatSession).filter(
+                    ChatSession.id == chat_session_id
+                ).first()
+    
+                if not chat_session:
+                    raise ValidationError("Chat session not found")
+    
+                logger.info(f"Creating ticket from chat session {chat_session_id}")
+    
+                # Pass ticket_no=None to let create_ticket() generate it atomically
+                # This prevents race conditions with other concurrent ticket creations
+                ticket_result = TicketCreationService.create_ticket(
+                    subject=issue_description[:100],
+                    detailed_description=issue_description,
+                    company_id=str(chat_session.company_id),
+                    raised_by_user_id=str(chat_session.user_id),
+                    category=inferred_category,
+                    level="level-1",
+                    created_at=date.today(),
+                    created_by_admin_id=None,
+                    ticket_no=None  # CRITICAL: Let create_ticket generate this atomically
+                )
+    
+                logger.info(f"✓ Ticket created: {ticket_result.get('ticket_no')}")
+                return ticket_result
+    
+            except Exception as e:
+                logger.error(f"Error creating ticket from chat: {e}", exc_info=True)
+                raise
+    
+            finally:
+                db.close()
+        
     def _get_adaptive_threshold(
         self,
         company_id: UUID,
