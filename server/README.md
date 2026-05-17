@@ -206,6 +206,68 @@ done
 
 ### Audit Trail
 
+---
+
+## 📁 File Storage with Cloudflare R2
+
+The system now uses **Cloudflare R2** for scalable, S3-compatible file storage with automatic soft-delete management.
+
+### Setup Instructions
+
+1. **Create R2 Bucket**
+   - Go to [Cloudflare Dashboard](https://dash.cloudflare.com/)
+   - Navigate to R2 and create a new bucket (e.g., `gatekeeper-uploads`)
+   - Enable "Allow public read access"
+   - Copy the R2 endpoint URL
+
+2. **Generate R2 API Token**
+   - In Cloudflare, create an API token with R2 permissions
+   - Copy `Account ID`, `Access Key ID`, and `Secret Access Key`
+
+3. **Configure Environment Variables**
+   ```bash
+   R2_ACCOUNT_ID=your-account-id
+   R2_ACCESS_KEY_ID=your-access-key
+   R2_SECRET_ACCESS_KEY=your-secret-key
+   R2_BUCKET_NAME=gatekeeper-uploads
+   R2_PUBLIC_URL=https://gatekeeper-uploads.r2.cloudflarecontent.com
+   R2_SOFT_DELETE_RETENTION_DAYS=7
+   ```
+
+4. **Install Dependencies**
+   ```bash
+   pip install -r requirements.txt
+   ```
+   (Includes `boto3` for S3-compatible R2 API)
+
+### Features
+
+* **Automatic Upload:** Ticket and RCA attachments automatically upload to R2
+* **Public URLs:** Generated public URLs for file access
+* **Soft-Delete:** Files marked for deletion stay in R2 for 7 days (configurable)
+* **Cleanup:** Run scheduled cleanup to permanently delete expired files
+
+### Manual Cleanup
+
+Run cleanup script to permanently delete soft-deleted files older than retention period:
+
+```bash
+python scripts/cleanup_soft_deleted_files.py
+```
+
+Or schedule as a cron job (daily at 2 AM):
+```bash
+0 2 * * * cd /path/to/gatekeeper && python scripts/cleanup_soft_deleted_files.py
+```
+
+### Migration from Cloudinary
+
+**Old Cloudinary URLs** continue to work - the system is backwards compatible.
+
+- New uploads go to R2 automatically
+- Existing Cloudinary URLs in database remain accessible
+- No data loss or broken links during migration
+
 * Every action logged as an event
 * Actor (`user_id`) always recorded
 * Timestamp + reason persisted

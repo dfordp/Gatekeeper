@@ -107,7 +107,7 @@ class TicketCreationService:
                     ticket_no = f"TKT-{ticket_no.zfill(6)}"
                 ticket_no = ticket_no.strip()
 
-            initial_status = status if status in ["open", "in_progress", "resolved", "closed", "reopened"] else "open"
+            initial_status = status if status in ["open", "in_progress", "resolved", "closed", "reopened", "user_input_required", "on_hold"] else "open"
 
             # Create ticket
             ticket = Ticket(
@@ -148,6 +148,21 @@ class TicketCreationService:
             db.commit()
 
             logger.info(f"✓ Ticket created: {ticket_no}")
+            
+            # Trigger email notification
+            try:
+                from .email_listener_service import EmailListenerService
+                EmailListenerService.on_ticket_created(
+                    ticket_id=str(ticket.id),
+                    ticket_no=ticket_no,
+                    ticket_subject=subject.strip(),
+                    company_id=company_id,
+                    raised_by_user_id=raised_by_user_id,
+                    raised_by_user_name=raised_by_user.name,
+                    raised_by_user_email=raised_by_user.email
+                )
+            except Exception as e:
+                logger.warning(f"Failed to trigger email notification: {e}")
 
             # Audit log
             if created_by_admin_id:
@@ -382,24 +397,24 @@ class TicketCreationService:
 
             logger.info(f"Deleting attachment {attachment_id}")
 
-            # Delete from Cloudinary if applicable
+            # Delete from storage service if applicable
             if attachment.file_path and attachment.file_path.startswith("http"):
                 try:
-                    import cloudinary
-                    import cloudinary.uploader
-                    from core.config import CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET
-
-                    if all([CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET]):
-                        cloudinary.config(
-                            cloud_name=CLOUDINARY_CLOUD_NAME,
-                            api_key=CLOUDINARY_API_KEY,
-                            api_secret=CLOUDINARY_API_SECRET
-                        )
-                        public_id = attachment.file_path.split('/')[-1].split('.')[0]
-                        cloudinary.uploader.destroy(f"tickets/{public_id}")
-                        logger.info(f"✓ Deleted from Cloudinary")
+                    # Extract S3 key from R2 URL (e.g., "tickets/uuid_filename.pdf")
+                    # URL format: https://bucket.r2.cloudflarecontent.com/tickets/uuid_filename.pdf
+                    url_parts = attachment.file_path.split("/")
+                    if len(url_parts) >= 4:
+                        # Get everything after domain (tickets/uuid_filename.pdf)
+                        s3_key = "/".join(url_parts[-2:])  # tickets/filename
+                        
+                        from services.r2_storage_service import get_r2_service
+                        r2_service = get_r2_service()
+                        r2_service.soft_delete_file(s3_key)
+                        logger.info(f"✓ Soft-deleted from R2: {s3_key}")
+                    else:
+                        logger.warning(f"Could not extract S3 key from URL: {attachment.file_path}")
                 except Exception as e:
-                    logger.warning(f"Failed to delete from Cloudinary: {e}")
+                    logger.warning(f"Failed to delete from R2: {e}")
 
             # Deprecate embeddings
             try:
@@ -419,11 +434,12 @@ class TicketCreationService:
                 payload={"attachment_id": str(attachment.id), "file_name": attachment.file_path.split('/')[-1]}
             )
 
-            db.delete(attachment)
+            # Mark as soft-deleted instead of hard-delete
+            attachment.deleted_at = date.today()
             db.add(deletion_event)
             db.commit()
 
-            logger.info(f"✓ Attachment deleted")
+            logger.info(f"✓ Attachment soft-deleted (marked at {attachment.deleted_at})")
 
             if admin_id:
                 try:
@@ -878,7 +894,7 @@ class TicketCreationService:
                 changes["level"] = level
 
             if status is not None:
-                valid_statuses = ["open", "in_progress", "resolved", "closed", "reopened"]
+                valid_statuses = ["open", "in_progress", "resolved", "closed", "reopened", "user_input_required", "on_hold"]
                 if status not in valid_statuses:
                     raise ValidationError(f"Invalid status. Must be one of: {', '.join(valid_statuses)}")
                 ticket.status = status

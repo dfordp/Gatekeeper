@@ -46,6 +46,14 @@ CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME")
 CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY")
 CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET")
 
+# Cloudflare R2 (for file storage)
+R2_ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID")
+R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID")
+R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY")
+R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME", "gatekeeper-uploads")
+R2_PUBLIC_URL = os.getenv("R2_PUBLIC_URL", "https://gatekeeper-uploads.r2.cdn.example.com")  # e.g., https://yourname.r2.cloudflarecontent.com or custom domain
+R2_SOFT_DELETE_RETENTION_DAYS = int(os.getenv("R2_SOFT_DELETE_RETENTION_DAYS", "7"))
+
 # WhatsApp (for Phase 7)
 WHATSAPP_PHONE_ID = os.getenv("WHATSAPP_PHONE_ID")
 WHATSAPP_ACCESS_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN")

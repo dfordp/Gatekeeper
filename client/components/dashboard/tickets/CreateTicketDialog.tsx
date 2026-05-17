@@ -42,9 +42,9 @@ interface AttachmentFile {
 }
 
 const PRIORITY_LEVELS = [
-  { value: "level-1", label: "Level 1 - Critical" },
+  { value: "level-1", label: "Level 1 - Medium" },
   { value: "level-2", label: "Level 2 - High" },
-  { value: "level-3", label: "Level 3 - Medium" },
+  { value: "level-3", label: "Level 3 - Critical" },
 ]
 
 const CATEGORIES = [
@@ -62,6 +62,8 @@ const CATEGORIES = [
 const STATUS_OPTIONS = [
   { value: "open", label: "Open" },
   { value: "in_progress", label: "In Progress" },
+  { value: "user_input_required", label: "User Input Required" },
+  { value: "on_hold", label: "On Hold" },
   { value: "resolved", label: "Resolved" },
   { value: "closed", label: "Closed" },
   { value: "reopened", label: "Reopened" },

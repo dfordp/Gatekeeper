@@ -1,36 +1,26 @@
 # server/services/file_upload_service.py
-"""File upload service with Cloudinary integration"""
+"""File upload service with R2 and legacy Cloudinary support"""
 import os
-import shutil
+import uuid
 from pathlib import Path
 from typing import Dict, Any, Optional
-import cloudinary
-import cloudinary.uploader
 
-from core.config import CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET
 from core.logger import get_logger
+from services.r2_storage_service import get_r2_service
 
 logger = get_logger(__name__)
-
-# Configure Cloudinary
-if CLOUDINARY_CLOUD_NAME and CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET:
-    cloudinary.config(
-        cloud_name=CLOUDINARY_CLOUD_NAME,
-        api_key=CLOUDINARY_API_KEY,
-        api_secret=CLOUDINARY_API_SECRET
-    )
 
 UPLOADS_DIR = Path(__file__).parent.parent / "uploads"
 UPLOADS_DIR.mkdir(exist_ok=True)
 
 
 class FileUploadService:
-    """Service for handling file uploads to local storage and Cloudinary"""
+    """Service for handling file uploads to local storage and R2"""
 
     @staticmethod
     def save_upload_file(file_path: str, content: bytes) -> str:
         """
-        Save uploaded file to local uploads directory
+        Save uploaded file to local uploads directory (temporary)
         
         Args:
             file_path: Original file name/path
@@ -53,34 +43,36 @@ class FileUploadService:
             raise
 
     @staticmethod
-    def upload_to_cloudinary(local_file_path: str, file_name: str) -> Optional[str]:
+    def upload_to_r2(local_file_path: str, file_name: str) -> Optional[str]:
         """
-        Upload file from local storage to Cloudinary
+        Upload file from local storage to Cloudflare R2
         
         Args:
             local_file_path: Path to local file
             file_name: Original file name
             
         Returns:
-            Cloudinary URL or None if upload fails
+            R2 public URL or None if upload fails
         """
-        if not all([CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET]):
-            logger.warning("Cloudinary not configured, skipping upload")
-            return None
-        
         try:
-            result = cloudinary.uploader.upload(
-                local_file_path,
-                public_id=f"tickets/{os.path.splitext(file_name)[0]}",
-                overwrite=True,
-                resource_type="auto"
-            )
+            r2_service = get_r2_service()
             
-            cloudinary_url = result.get("secure_url")
-            logger.info(f"✓ File uploaded to Cloudinary: {cloudinary_url}")
-            return cloudinary_url
+            # Generate S3 key with uuid prefix to avoid collisions
+            file_uuid = str(uuid.uuid4())[:8]
+            file_ext = os.path.splitext(file_name)[1]
+            s3_key = f"tickets/{file_uuid}_{os.path.splitext(file_name)[0]}{file_ext}"
+            
+            # Upload to R2
+            r2_url = r2_service.upload_file(local_file_path, s3_key)
+            
+            if r2_url:
+                logger.info(f"✓ File uploaded to R2: {r2_url}")
+                return r2_url
+            else:
+                logger.warning("R2 upload returned None")
+                return None
         except Exception as e:
-            logger.error(f"Failed to upload to Cloudinary: {e}")
+            logger.error(f"Failed to upload to R2: {e}")
             return None
 
     @staticmethod
@@ -109,7 +101,7 @@ class FileUploadService:
         """
         Complete file upload process:
         1. Save to local uploads directory
-        2. Upload to Cloudinary
+        2. Upload to R2
         3. Delete from local directory
         
         Args:
@@ -117,22 +109,23 @@ class FileUploadService:
             file_name: Original file name
             
         Returns:
-            Dict with file_path (local), cloudinary_url, file_name, file_size
+            Dict with file_path (local), r2_url, file_name, file_size
         """
         try:
             # Step 1: Save locally
             local_path = FileUploadService.save_upload_file(file_name, file_content)
             file_size = len(file_content)
             
-            # Step 2: Upload to Cloudinary
-            cloudinary_url = FileUploadService.upload_to_cloudinary(local_path, file_name)
+            # Step 2: Upload to R2
+            r2_url = FileUploadService.upload_to_r2(local_path, file_name)
             
             # Step 3: Delete local file
             FileUploadService.delete_local_file(local_path)
             
             return {
                 "file_path": local_path,
-                "cloudinary_url": cloudinary_url,
+                "r2_url": r2_url,
+                "cloudinary_url": r2_url,  # For backwards compatibility with calling code
                 "file_name": file_name,
                 "file_size": file_size,
                 "success": True

@@ -57,9 +57,9 @@ interface AttachmentFile {
 }
 
 const PRIORITY_LEVELS = [
-  { value: "level-1", label: "Level 1 - Critical" },
+  { value: "level-1", label: "Level 1 - Medium" },
   { value: "level-2", label: "Level 2 - High" },
-  { value: "level-3", label: "Level 3 - Medium" },
+  { value: "level-3", label: "Level 3 - Critical" },
 ]
 
 const CATEGORIES = [

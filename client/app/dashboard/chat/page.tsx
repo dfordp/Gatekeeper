@@ -15,27 +15,45 @@ interface ChatSession {
   last_message_at: string;
 }
 
+interface ChatSessionsResponse {
+  sessions: ChatSession[];
+}
+
+interface UserData {
+  id: string;
+  email: string;
+  name: string;
+}
+
+interface UsersResponse {
+  users: UserData[];
+}
+
+interface ChatInitResponse {
+  message: string;
+}
+
 export default function ChatManagementPage() {
-  const { user, loading } = useAuth();
+  const { admin, isLoading } = useAuth();
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [formData, setFormData] = useState({
     user_id: '',
     telegram_chat_id: ''
   });
-  const [isLoading, setIsLoading] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [message, setMessage] = useState('');
-  const [users, setUsers] = useState<any[]>([]);
+  const [users, setUsers] = useState<UserData[]>([]);
 
   useEffect(() => {   
     
     loadSessions();
     loadUsers();
-  }, [user]);
+  }, [admin]);
 
   const loadSessions = async () => {
     try {
-      const response = await apiClient.get('/api/chat/sessions');
+      const response = await apiClient.get<ChatSessionsResponse>('/api/chat/sessions');
       setSessions(response.data.sessions);
     } catch (error) {
       console.error('Failed to load sessions:', error);
@@ -44,7 +62,7 @@ export default function ChatManagementPage() {
 
   const loadUsers = async () => {
     try {
-      const response = await apiClient.get('/api/users');
+      const response = await apiClient.get<UsersResponse>('/api/users');
       setUsers(response.data.users || []);
     } catch (error) {
       console.error('Failed to load users:', error);
@@ -53,7 +71,7 @@ export default function ChatManagementPage() {
 
   const handleCreateSession = async (e: React.FormEvent) => {
     e.preventDefault();
-    setIsLoading(true);
+    setIsSubmitting(true);
 
     try {
       const params = new URLSearchParams({
@@ -61,7 +79,7 @@ export default function ChatManagementPage() {
         telegram_chat_id: formData.telegram_chat_id
       });
       
-      const response = await apiClient.post(`/api/chat/init?${params.toString()}`);
+      const response = await apiClient.post<ChatInitResponse>(`/api/chat/init?${params.toString()}`);
 
       setMessage(`✓ ${response.data.message}`);
       setFormData({ user_id: '', telegram_chat_id: '' });
@@ -70,7 +88,7 @@ export default function ChatManagementPage() {
     } catch (error: any) {
       setMessage(`❌ ${error.response?.data?.detail || 'Failed to create session'}`);
     } finally {
-      setIsLoading(false);
+      setIsSubmitting(false);
     }
   };
 
@@ -86,7 +104,7 @@ export default function ChatManagementPage() {
     }
   };
 
-  if (loading) return <div>Loading...</div>;
+  if (isLoading) return <div>Loading...</div>;
 
   return (
     <DashboardLayout>
@@ -140,10 +158,10 @@ export default function ChatManagementPage() {
 
           <button
             type="submit"
-            disabled={isLoading}
+            disabled={isSubmitting}
             className="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700 disabled:opacity-50"
           >
-            {isLoading ? 'Creating...' : 'Create Session'}
+            {isSubmitting ? 'Creating...' : 'Create Session'}
           </button>
 
           {message && (

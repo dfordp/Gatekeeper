@@ -89,6 +89,19 @@ class UserService:
             
             logger.info(f"✓ User created: {email}")
             
+            # Trigger email notification
+            try:
+                from .email_listener_service import EmailListenerService
+                EmailListenerService.on_user_created(
+                    user_id=str(user.id),
+                    user_name=name,
+                    user_email=email,
+                    company_id=company_id,
+                    role=role
+                )
+            except Exception as e:
+                logger.warning(f"Failed to trigger email notification: {e}")
+            
             return {
                 "id": str(user.id),
                 "name": user.name,
@@ -250,6 +263,19 @@ class UserService:
                     )
                 
                 logger.info(f"✓ User updated: {user.email}")
+                
+                # Trigger email notification
+                try:
+                    from .email_listener_service import EmailListenerService
+                    EmailListenerService.on_user_updated(
+                        user_id=user_id,
+                        user_name=user.name,
+                        user_email=user.email,
+                        company_id=str(user.company_id),
+                        changes=changes
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to trigger email notification: {e}")
             
             return {
                 "id": str(user.id),
@@ -281,6 +307,8 @@ class UserService:
                 raise NotFoundError("User not found")
             
             email = user.email
+            user_name = user.name
+            company_id = str(user.company_id)
             db.delete(user)
             db.commit()
             
@@ -295,6 +323,18 @@ class UserService:
                 )
             
             logger.info(f"✓ User deleted: {email}")
+            
+            # Trigger email notification
+            try:
+                from .email_listener_service import EmailListenerService
+                EmailListenerService.on_user_deleted(
+                    user_id=user_id,
+                    user_name=user_name,
+                    user_email=email,
+                    company_id=company_id
+                )
+            except Exception as e:
+                logger.warning(f"Failed to trigger email notification: {e}")
             return True
             
         except NotFoundError:

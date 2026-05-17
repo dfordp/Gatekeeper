@@ -14,9 +14,25 @@ import {
   TabsList,
   TabsTrigger,
 } from "@/components/ui/tabs"
-import { Loader2, ArrowLeft, AlertCircle, Trash2, Edit2, FileText, Zap, Download, Plus } from "lucide-react"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { Loader2, ArrowLeft, AlertCircle, Trash2, Edit2, FileText, Zap, Download, Plus, FileDown } from "lucide-react"
 import { ticketService, TicketDetail as TicketDetailType } from "@/services/ticket.service"
 import { irService, IncidentReport } from "@/services/ir.service"
+import { userService, User } from "@/services/user.service"
 import IRDialog from "./IRDialog"
 import TicketTimeline from "./TicketTimeline"
 import TicketActions from "./TicketActions"
@@ -29,6 +45,8 @@ interface TicketDetailProps {
 const statusColors: Record<string, string> = {
   open: "bg-red-100 text-red-800",
   in_progress: "bg-yellow-100 text-yellow-800",
+  user_input_required: "bg-blue-100 text-blue-800",
+  on_hold: "bg-purple-100 text-purple-800",
   resolved: "bg-green-100 text-green-800",
   closed: "bg-gray-100 text-gray-800",
   reopened: "bg-orange-100 text-orange-800",
@@ -45,6 +63,24 @@ const isImageFile = (filename: string): boolean => {
   return imageExtensions.some(ext => filename.toLowerCase().endsWith(ext))
 }
 
+const getErrorMessage = (err: unknown, fallback: string) => {
+  const apiError = err as { response?: { data?: { detail?: string } } }
+  return apiError.response?.data?.detail || (err instanceof Error ? err.message : fallback)
+}
+
+const escapeHtml = (value: unknown) =>
+  String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;")
+
+const renderList = (items?: string[]) => {
+  if (!items || items.length === 0) return "<p class=\"muted\">Not provided</p>"
+  return `<ol>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ol>`
+}
+
 export default function TicketDetail({ ticketId }: TicketDetailProps) {
   const router = useRouter()
   const [ticket, setTicket] = useState<TicketDetailType | null>(null)
@@ -55,6 +91,10 @@ export default function TicketDetail({ ticketId }: TicketDetailProps) {
   const [showEditDialog, setShowEditDialog] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [irDialogOpen, setIRDialogOpen] = useState(false)
+  const [assignAfterLevelChangeOpen, setAssignAfterLevelChangeOpen] = useState(false)
+  const [engineers, setEngineers] = useState<User[]>([])
+  const [selectedEngineerId, setSelectedEngineerId] = useState("")
+  const [loadingEngineers, setLoadingEngineers] = useState(false)
 
   useEffect(() => {
     fetchTicket()
@@ -73,8 +113,8 @@ export default function TicketDetail({ ticketId }: TicketDetailProps) {
       } else {
         setExistingIR(null)
       }
-    } catch (err: any) {
-      setError(err.response?.data?.detail || "Failed to load ticket")
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, "Failed to load ticket"))
     } finally {
       setLoading(false)
     }
@@ -87,7 +127,7 @@ export default function TicketDetail({ ticketId }: TicketDetailProps) {
         // Get the most recent IR (first one since they're ordered by raised_at DESC)
         setExistingIR(irs[0])
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("Failed to fetch existing IR:", err)
       // Don't show error to user, just log it
     }
@@ -98,9 +138,9 @@ export default function TicketDetail({ ticketId }: TicketDetailProps) {
     try {
       setActionLoading(true)
       await ticketService.updateStatus(ticketId, newStatus)
-      setTicket({ ...ticket, status: newStatus as any })
-    } catch (err: any) {
-      setError(err.response?.data?.detail || "Failed to update status")
+      setTicket({ ...ticket, status: newStatus })
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, "Failed to update status"))
     } finally {
       setActionLoading(false)
     }
@@ -116,8 +156,8 @@ export default function TicketDetail({ ticketId }: TicketDetailProps) {
         assigned_to: response.assigned_to,
         assigned_to_id: response.assigned_to_id,
       })
-    } catch (err: any) {
-      setError(err.response?.data?.detail || "Failed to assign ticket")
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, "Failed to assign ticket"))
     } finally {
       setActionLoading(false)
     }
@@ -128,8 +168,8 @@ export default function TicketDetail({ ticketId }: TicketDetailProps) {
       setActionLoading(true)
       await ticketService.deleteTicket(ticketId)
       router.push("/dashboard/tickets")
-    } catch (err: any) {
-      setError(err.response?.data?.detail || "Failed to delete ticket")
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, "Failed to delete ticket"))
     } finally {
       setActionLoading(false)
       setShowDeleteConfirm(false)
@@ -142,23 +182,263 @@ export default function TicketDetail({ ticketId }: TicketDetailProps) {
     detailed_description: string
     category?: string
     level?: string
-    created_at?: string  
+    created_at?: string
+    closed_at?: string
   }) => {
+    if (!ticket) return
+
+    const previousLevel = ticket.level || ""
+    const nextLevel = data.level || ""
+    const shouldPromptAssignment =
+      ticket.status !== "closed" && Boolean(nextLevel) && nextLevel !== previousLevel
+
     try {
       setActionLoading(true)
       const updated = await ticketService.updateTicket(ticketId, data)
-      setTicket({ ...ticket, ...updated } as TicketDetailType)
+      const nextTicket = { ...ticket, ...updated } as TicketDetailType
+      setTicket(nextTicket)
       setShowEditDialog(false)
-    } catch (err: any) {
-      setError(err.response?.data?.detail || "Failed to update ticket")
+      if (shouldPromptAssignment) {
+        setSelectedEngineerId(nextTicket.assigned_to_id || "")
+        setAssignAfterLevelChangeOpen(true)
+        await fetchEngineersForAssignment()
+      }
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, "Failed to update ticket"))
     } finally {
       setActionLoading(false)
     }
   }
 
+  const fetchEngineersForAssignment = async () => {
+    try {
+      setLoadingEngineers(true)
+      const result = await userService.getUsers()
+      setEngineers(
+        result.users?.filter(
+          (u) => u.role === "support_engineer" || u.role === "supervisor"
+        ) || []
+      )
+    } catch (err) {
+      console.error("Failed to load engineers:", err)
+      setError("Failed to load engineers for reassignment")
+    } finally {
+      setLoadingEngineers(false)
+    }
+  }
+
+  const handleAssignmentAfterLevelChange = async () => {
+    if (!selectedEngineerId) {
+      setError("Please select an engineer before assigning the ticket")
+      return
+    }
+
+    await handleAssign(selectedEngineerId)
+    setAssignAfterLevelChangeOpen(false)
+  }
+
   const handleIRUpdated = () => {
     // Refresh both ticket and IR data
     fetchTicket()
+  }
+
+  const handleExportRcaPdf = () => {
+    if (!ticket?.rca) return
+
+    const rca = ticket.rca
+    const resolutionNote = ticket.resolution_note
+    const generatedAt = new Date().toLocaleString()
+    const attachmentRows = rca.attachments?.map((attachment) => {
+      const displayName = attachment.file_path?.split("/").pop() || attachment.file_path
+      const isImage = displayName ? isImageFile(displayName) : false
+      const safeUrl = escapeHtml(attachment.file_path)
+
+      return `
+        <div class="attachment">
+          ${isImage ? `<img src="${safeUrl}" alt="${escapeHtml(displayName)}" />` : ""}
+          <div>
+            <p><strong>${escapeHtml(displayName)}</strong></p>
+            <p class="muted">${escapeHtml(attachment.type || "attachment")}</p>
+            <a href="${safeUrl}">${safeUrl}</a>
+          </div>
+        </div>
+      `
+    }).join("") || "<p class=\"muted\">No RCA attachments</p>"
+
+    const html = `
+      <!doctype html>
+      <html>
+        <head>
+          <title>RCA ${escapeHtml(ticket.ticket_no)}</title>
+          <style>
+            @page { margin: 18mm; }
+            body {
+              color: #111827;
+              font-family: Arial, Helvetica, sans-serif;
+              font-size: 12px;
+              line-height: 1.5;
+            }
+            h1, h2, h3, p { margin: 0; }
+            h1 { font-size: 24px; }
+            h2 {
+              border-bottom: 1px solid #d1d5db;
+              font-size: 15px;
+              margin-top: 22px;
+              padding-bottom: 6px;
+            }
+            h3 {
+              font-size: 13px;
+              margin-top: 14px;
+            }
+            ol, ul { margin: 8px 0 0 18px; padding: 0; }
+            li { margin-bottom: 4px; }
+            .header {
+              border-bottom: 2px solid #111827;
+              display: flex;
+              gap: 24px;
+              justify-content: space-between;
+              padding-bottom: 14px;
+            }
+            .muted { color: #6b7280; }
+            .meta {
+              display: grid;
+              gap: 10px;
+              grid-template-columns: repeat(4, 1fr);
+              margin-top: 16px;
+            }
+            .meta div, .section-box {
+              border: 1px solid #e5e7eb;
+              border-radius: 6px;
+              padding: 10px;
+            }
+            .label {
+              color: #6b7280;
+              font-size: 10px;
+              font-weight: 700;
+              letter-spacing: 0.04em;
+              text-transform: uppercase;
+            }
+            .value {
+              font-size: 13px;
+              font-weight: 700;
+              margin-top: 3px;
+            }
+            .section-box {
+              margin-top: 8px;
+              white-space: pre-wrap;
+            }
+            .attachment {
+              align-items: flex-start;
+              border: 1px solid #e5e7eb;
+              border-radius: 6px;
+              display: flex;
+              gap: 12px;
+              margin-top: 8px;
+              padding: 10px;
+              page-break-inside: avoid;
+            }
+            .attachment img {
+              border: 1px solid #e5e7eb;
+              max-height: 140px;
+              max-width: 180px;
+              object-fit: contain;
+            }
+            a { color: #1d4ed8; word-break: break-all; }
+            .footer {
+              border-top: 1px solid #e5e7eb;
+              color: #6b7280;
+              font-size: 10px;
+              margin-top: 28px;
+              padding-top: 10px;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <div>
+              <p class="muted">Root Cause Analysis Report</p>
+              <h1>${escapeHtml(ticket.ticket_no)}</h1>
+              <p>${escapeHtml(ticket.subject)}</p>
+            </div>
+            <div>
+              <p class="label">Generated</p>
+              <p>${escapeHtml(generatedAt)}</p>
+            </div>
+          </div>
+
+          <div class="meta">
+            <div><p class="label">Company</p><p class="value">${escapeHtml(ticket.company_name || "-")}</p></div>
+            <div><p class="label">Status</p><p class="value">${escapeHtml(ticket.status)}</p></div>
+            <div><p class="label">Level</p><p class="value">${escapeHtml(ticket.level || "-")}</p></div>
+            <div><p class="label">Category</p><p class="value">${escapeHtml(ticket.category || "-")}</p></div>
+            <div><p class="label">Created</p><p class="value">${escapeHtml(ticket.created_at || "-")}</p></div>
+            <div><p class="label">Closed</p><p class="value">${escapeHtml(ticket.closed_at || "-")}</p></div>
+            <div><p class="label">Created By</p><p class="value">${escapeHtml(ticket.created_by || "-")}</p></div>
+            <div><p class="label">Assigned To</p><p class="value">${escapeHtml(ticket.assigned_to || "Unassigned")}</p></div>
+          </div>
+
+          <h2>Ticket Description</h2>
+          <div class="section-box">${escapeHtml(ticket.detailed_description || "-")}</div>
+
+          <h2>Root Cause</h2>
+          <div class="section-box">${escapeHtml(rca.root_cause || rca.root_cause_description || "-")}</div>
+
+          <h2>Contributing Factors</h2>
+          ${renderList(rca.contributing_factors)}
+
+          <h2>Prevention Measures</h2>
+          <div class="section-box">${escapeHtml(rca.prevention_measures || "Not provided")}</div>
+
+          <h2>Resolution Steps</h2>
+          ${renderList(rca.resolution_steps)}
+
+          <h2>RCA Attachments</h2>
+          ${attachmentRows}
+
+          <h2>Resolution Note</h2>
+          ${
+            resolutionNote
+              ? `
+                <div class="section-box">${escapeHtml(resolutionNote.solution_description)}</div>
+                <h3>Steps Taken</h3>${renderList(resolutionNote.steps_taken)}
+                <h3>Resources Used</h3>${renderList(resolutionNote.resources_used)}
+                <h3>Follow-up Notes</h3><div class="section-box">${escapeHtml(resolutionNote.follow_up_notes || "Not provided")}</div>
+              `
+              : "<p class=\"muted\">No resolution note recorded.</p>"
+          }
+
+          <div class="footer">
+            Exported from Gatekeeper Support Platform.
+          </div>
+          <script>
+            window.addEventListener("load", () => {
+              window.focus();
+              window.print();
+            });
+          </script>
+        </body>
+      </html>
+    `
+
+    try {
+      const blob = new Blob([html], { type: "text/html;charset=utf-8;" })
+      const url = URL.createObjectURL(blob)
+      const printWindow = window.open(url, "_blank")
+      
+      if (!printWindow) {
+        setError("Unable to open PDF export window. Please allow pop-ups for this site.")
+        URL.revokeObjectURL(url)
+        return
+      }
+
+      // Clean up the blob URL after a delay to ensure the window has it
+      setTimeout(() => {
+        URL.revokeObjectURL(url)
+      }, 100)
+    } catch (err) {
+      console.error("Failed to generate PDF:", err)
+      setError("Failed to generate PDF export. Please try again.")
+    }
   }
 
   if (loading) {
@@ -326,7 +606,7 @@ export default function TicketDetail({ ticketId }: TicketDetailProps) {
                                   src={downloadUrl}
                                   alt={displayName}
                                   className="max-w-full max-h-96 object-contain rounded"
-                                  onError={(e) => {
+                                  onError={() => {
                                     console.error(`Failed to load image: ${displayName}`)
                                   }}
                                 />
@@ -435,8 +715,16 @@ export default function TicketDetail({ ticketId }: TicketDetailProps) {
         {ticket.rca && (
           <TabsContent value="rca" className="space-y-6">
             <Card>
-              <CardHeader>
+              <CardHeader className="flex flex-row items-center justify-between gap-4">
                 <CardTitle>Root Cause Analysis</CardTitle>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleExportRcaPdf}
+                >
+                  <FileDown className="h-4 w-4 mr-2" />
+                  Export PDF
+                </Button>
               </CardHeader>
               <CardContent className="space-y-6">
                 <div>
@@ -514,7 +802,7 @@ export default function TicketDetail({ ticketId }: TicketDetailProps) {
                                   src={attachment.file_path}
                                   alt={displayName}
                                   className="max-w-full max-h-96 object-contain rounded"
-                                  onError={(e) => {
+                                  onError={() => {
                                     console.error(`Failed to load RCA attachment image: ${displayName}`)
                                   }}
                                 />
@@ -631,6 +919,67 @@ export default function TicketDetail({ ticketId }: TicketDetailProps) {
         isLoading={actionLoading}
       />
 
+      <Dialog
+        open={assignAfterLevelChangeOpen}
+        onOpenChange={setAssignAfterLevelChangeOpen}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reassign Ticket</DialogTitle>
+            <DialogDescription>
+              The priority level changed while this ticket is still active. Choose the engineer who should own it now.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            <div className="rounded border bg-blue-50 p-3 text-sm text-blue-900">
+              <p className="font-medium">{ticket.ticket_no}</p>
+              <p className="mt-1">{ticket.subject}</p>
+            </div>
+
+            {loadingEngineers ? (
+              <div className="flex items-center justify-center py-6">
+                <Loader2 className="h-5 w-5 animate-spin text-gray-500" />
+              </div>
+            ) : (
+              <Select value={selectedEngineerId} onValueChange={setSelectedEngineerId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select engineer..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {engineers.map((engineer) => (
+                    <SelectItem key={engineer.id} value={engineer.id}>
+                      {engineer.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+
+            {!loadingEngineers && engineers.length === 0 && (
+              <p className="text-sm text-gray-500">No support engineers or supervisors are available.</p>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setAssignAfterLevelChangeOpen(false)}
+              disabled={actionLoading}
+            >
+              Skip
+            </Button>
+            <Button
+              onClick={handleAssignmentAfterLevelChange}
+              disabled={actionLoading || loadingEngineers || engineers.length === 0}
+            >
+              {actionLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Assign Ticket
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* IR Dialog */}
       <IRDialog
         open={irDialogOpen}
@@ -638,7 +987,7 @@ export default function TicketDetail({ ticketId }: TicketDetailProps) {
         ticketId={ticket.id}
         ticketNo={ticket.ticket_no}
         hasOpenIR={ticket.has_ir || false}
-        irNumber={ticket.ir_number}
+        irNumber={ticket.ir_number || undefined}
         existingIR={existingIR}
         onIRUpdated={handleIRUpdated}
       />

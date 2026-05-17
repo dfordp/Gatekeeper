@@ -34,6 +34,7 @@ class TaskType(str, Enum):
     EMBEDDING_CREATION = "embedding_creation"
     RCA_CREATION = "rca_creation"
     QDRANT_SYNC = "qdrant_sync"
+    EMAIL_SEND = "email_send"
 
 
 class TaskStatus(str, Enum):

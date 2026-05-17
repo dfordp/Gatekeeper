@@ -5,7 +5,8 @@ import { apiClient } from "@/lib/api-client"
 
 export interface TicketEvent {
   id: string
-  type: string
+  event_type: string
+  actor_user_id: string
   actor: string | null
   payload: Record<string, unknown>
   created_at: string
@@ -129,7 +130,7 @@ export interface CreateTicketRequest {
 export interface AddAttachmentRequest {
   file_path: string
   file_name: string
-  attachment_type: string
+  type: string
   mime_type?: string
   file_size?: number
   cloudinary_url?: string
@@ -162,13 +163,17 @@ export const ticketService = {
     limit: number = 50,
     offset: number = 0,
     status?: string,
-    search?: string
+    search?: string,
+    companyId?: string,
+    level?: string
   ): Promise<TicketsListResponse> {
     const params = new URLSearchParams()
     params.append("limit", limit.toString())
     params.append("offset", offset.toString())
     if (status) params.append("status", status)
     if (search) params.append("search", search)
+    if (companyId) params.append("company_id", companyId)
+    if (level) params.append("level", level)
 
     const response = await apiClient.get<TicketsListResponse>(
       `/api/dashboard/tickets?${params.toString()}`
@@ -297,8 +302,8 @@ export const ticketService = {
     category?: string
     level?: string
     created_at?: string  // ADD THIS
-  }): Promise<any> {
-    const response = await apiClient.put(
+  }): Promise<Ticket> {
+    const response = await apiClient.put<Ticket>(
       `/api/tickets/${ticketId}`,
       data
     )

@@ -728,30 +728,29 @@ async def delete_rca_attachment(
             except Exception as e:
                 logger.warning(f"Failed to deprecate embeddings: {e}")
             
-            # Delete from Cloudinary if applicable
+            # Delete from storage service if applicable
             if rca_attachment.file_path and rca_attachment.file_path.startswith("http"):
                 try:
-                    import cloudinary
-                    import cloudinary.uploader
-                    from core.config import CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET
-                    
-                    if all([CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET]):
-                        cloudinary.config(
-                            cloud_name=CLOUDINARY_CLOUD_NAME,
-                            api_key=CLOUDINARY_API_KEY,
-                            api_secret=CLOUDINARY_API_SECRET
-                        )
-                        public_id = rca_attachment.file_path.split('/')[-1].split('.')[0]
-                        cloudinary.uploader.destroy(f"tickets/{public_id}")
-                        logger.info(f"✓ Deleted from Cloudinary: {public_id}")
+                    # Extract S3 key from R2 URL (e.g., "tickets/uuid_filename.pdf")
+                    url_parts = rca_attachment.file_path.split("/")
+                    if len(url_parts) >= 4:
+                        s3_key = "/".join(url_parts[-2:])  # tickets/filename
+                        
+                        from services.r2_storage_service import get_r2_service
+                        r2_service = get_r2_service()
+                        r2_service.soft_delete_file(s3_key)
+                        logger.info(f"✓ Soft-deleted from R2: {s3_key}")
+                    else:
+                        logger.warning(f"Could not extract S3 key from URL: {rca_attachment.file_path}")
                 except Exception as e:
-                    logger.warning(f"Failed to delete from Cloudinary: {e}")
+                    logger.warning(f"Failed to delete from R2: {e}")
             
-            # Delete from database
-            db.delete(rca_attachment)
+            # Mark as soft-deleted instead of hard-delete
+            from datetime import date
+            rca_attachment.deleted_at = date.today()
             db.commit()
             
-            logger.info(f"✓ RCA attachment deleted: {attachment_id}")
+            logger.info(f"✓ RCA attachment soft-deleted: {attachment_id}")
             
             return serialize_date_fields({
                 "success": True,

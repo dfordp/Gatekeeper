@@ -38,6 +38,7 @@ class Company(Base):
     tickets = relationship("Ticket", back_populates="company", cascade="all, delete-orphan")
     embeddings = relationship("Embedding", back_populates="company", cascade="all, delete-orphan")
     admin_users = relationship("AdminUser", back_populates="company", cascade="all, delete-orphan")
+    email_configuration = relationship("EmailConfiguration", back_populates="company", cascade="all, delete-orphan", uselist=False)
     
     def __repr__(self):
         return f"<Company {self.name}>"
@@ -225,6 +226,7 @@ class Attachment(Base):
     file_path = Column(String(1000), nullable=False)
     mime_type = Column(String(100), nullable=True)
     created_at = Column(Date, nullable=False, default=date.today)
+    deleted_at = Column(Date, nullable=True, index=True)  # Soft-delete timestamp
     
     ticket = relationship("Ticket", back_populates="attachments")
     events = relationship("AttachmentEvent", back_populates="attachment", cascade="all, delete-orphan")
@@ -303,6 +305,7 @@ class RCAAttachment(Base):
     file_path = Column(String(1000), nullable=False)
     mime_type = Column(String(100), nullable=True)
     created_at = Column(Date, nullable=False, default=date.today)
+    deleted_at = Column(Date, nullable=True, index=True)  # Soft-delete timestamp
     
     rca = relationship("RootCauseAnalysis", foreign_keys=[rca_id], back_populates="attachments")
     embeddings = relationship("Embedding", back_populates="rca_attachment")
@@ -531,6 +534,94 @@ class ChatAttachment(Base):
     
     def __repr__(self):
         return f"<ChatAttachment {self.file_name}>"
+
+
+class EmailTemplate(Base):
+    """Email template model - stores email templates for different events"""
+    __tablename__ = "email_template"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    event_type = Column(String(50), nullable=False, unique=True, index=True)
+    subject_template = Column(String(500), nullable=False)
+    body_template = Column(Text, nullable=False)
+    description = Column(Text, nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    
+    __table_args__ = (
+        Index("idx_email_template_event_type", "event_type"),
+        Index("idx_email_template_active", "is_active"),
+    )
+    
+    def __repr__(self):
+        return f"<EmailTemplate {self.event_type}>"
+
+
+class EmailConfiguration(Base):
+    """Email configuration model - stores per-company email settings and overrides"""
+    __tablename__ = "email_configuration"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id = Column(UUID(as_uuid=True), ForeignKey("company.id"), nullable=False, unique=True, index=True)
+    enabled_events = Column(JSONB, nullable=False, default=[])  # List of enabled event types
+    recipient_overrides = Column(JSONB, nullable=False, default={})  # {event_type: {role: [emails]}}
+    default_cc_list = Column(JSONB, nullable=False, default=[])  # Default CC recipients
+    default_bcc_list = Column(JSONB, nullable=False, default=[])  # Default BCC recipients
+    email_from_name = Column(String(255), nullable=True)  # Custom from name
+    rate_limit_per_hour = Column(Integer, nullable=True, default=1000)  # Rate limiting
+    is_enabled = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    
+    company = relationship("Company", back_populates="email_configuration")
+    
+    __table_args__ = (
+        Index("idx_email_config_company", "company_id"),
+        Index("idx_email_config_enabled", "is_enabled"),
+    )
+    
+    def __repr__(self):
+        return f"<EmailConfiguration {self.company_id}>"
+
+
+class EmailLog(Base):
+    """Email log model - audit trail for all sent emails"""
+    __tablename__ = "email_log"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id = Column(UUID(as_uuid=True), ForeignKey("company.id"), nullable=False, index=True)
+    event_type = Column(String(50), nullable=False, index=True)
+    ticket_id = Column(UUID(as_uuid=True), ForeignKey("ticket.id"), nullable=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=True)
+    recipient_email = Column(String(255), nullable=False)
+    recipient_role = Column(String(50), nullable=True)  # engineer, support, admin, etc.
+    subject = Column(String(500), nullable=False)
+    status = Column(String(50), nullable=False, default="pending", index=True)  # pending, sent, failed, retrying
+    zoho_message_id = Column(String(255), nullable=True)  # Message ID from Zoho API
+    error_message = Column(Text, nullable=True)
+    retry_count = Column(Integer, nullable=False, default=0)
+    max_retries = Column(Integer, nullable=False, default=3)
+    sent_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    
+    company = relationship("Company")
+    ticket = relationship("Ticket")
+    user = relationship("User")
+    
+    __table_args__ = (
+        Index("idx_email_log_company", "company_id"),
+        Index("idx_email_log_event_type", "event_type"),
+        Index("idx_email_log_status", "status"),
+        Index("idx_email_log_ticket", "ticket_id"),
+        Index("idx_email_log_user", "user_id"),
+        Index("idx_email_log_created_at", "created_at"),
+    )
+    
+    def __repr__(self):
+        return f"<EmailLog {self.id} {self.event_type}>"
+
 
 def get_db() -> Session:
     """Dependency injection for FastAPI"""

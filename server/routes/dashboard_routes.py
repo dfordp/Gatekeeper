@@ -21,9 +21,11 @@ class AssignTicketRequest(BaseModel):
     engineer_id: str
 
 @router.get("/tickets")
-@cache_endpoint(ttl=30, tag="ticket:list", key_params=["company_id", "status"])
+@cache_endpoint(ttl=30, tag="ticket:list", key_params=["company_id", "status", "level", "search"])
 async def get_tickets(
+    company_id: str = Query(None),
     status: str = Query(None),
+    level: str = Query(None),
     search: str = Query(None),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
@@ -31,7 +33,9 @@ async def get_tickets(
     """Get paginated list of tickets with caching"""
     try:
         result = TicketService.get_tickets(
+            company_id=company_id,
             status=status,
+            level=level,
             limit=limit,
             offset=offset,
             search=search
@@ -110,7 +114,7 @@ async def assign_ticket(
 
 
 @router.get("/analytics")
-@cache_endpoint(ttl=300, tag="analytics", key_params=["company_id", "period"])
+@cache_endpoint(ttl=300, tag="analytics", key_params=["days"], endpoint_name="get_analytics_v2")
 async def get_analytics(
     days: int = Query(30, ge=1, le=365),
     admin_payload: dict = Depends(get_current_admin)

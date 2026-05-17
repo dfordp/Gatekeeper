@@ -103,17 +103,7 @@ export default function AnalyticsCards({ analytics }: { analytics: Analytics | n
     )
   }
 
-  const resolutionTimeDisplay = getResolutionTimeDisplay(
-    analytics.avg_resolution_time || analytics.avg_resolution_time_hours
-  )
-
   const cards = [
-    {
-      title: "Total Tickets",
-      value: analytics.total_tickets ?? 0,
-      icon: BarChart3,
-      color: "bg-blue-50 text-blue-600",
-    },
     {
       title: "Open",
       value: analytics.open_tickets ?? 0,
@@ -137,12 +127,6 @@ export default function AnalyticsCards({ analytics }: { analytics: Analytics | n
       value: analytics.closed ?? 0,
       icon: XCircle,
       color: "bg-gray-50 text-gray-600",
-    },
-    {
-      title: "Avg Resolution Time",
-      value: resolutionTimeDisplay,
-      icon: Clock,
-      color: "bg-purple-50 text-purple-600",
     },
   ]
 

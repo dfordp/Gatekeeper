@@ -51,3 +51,68 @@ export function formatDateForDisplay(dateStr: string | undefined): string {
     return ""
   }
 }
+
+/**
+ * Calculate how long a ticket has been open
+ * @param createdAt ISO date string or Date object when ticket was created
+ * @param closedAt Optional ISO date string or Date object when ticket was closed (defaults to now)
+ * @returns Object with days and formatted string
+ */
+export interface TicketDuration {
+  days: number
+  formatted: string
+}
+
+export function calculateTicketOpenDuration(
+  createdAt: string | Date,
+  closedAt?: string | Date | null
+): TicketDuration {
+  if (!createdAt) {
+    return {
+      days: 0,
+      formatted: "—"
+    }
+  }
+
+  try {
+    const startDate = typeof createdAt === 'string' ? new Date(createdAt) : createdAt
+    const endDate = closedAt 
+      ? (typeof closedAt === 'string' ? new Date(closedAt) : closedAt)
+      : new Date()
+
+    // Calculate difference in milliseconds
+    const diffMs = endDate.getTime() - startDate.getTime()
+    
+    // Handle negative durations (shouldn't happen but just in case)
+    if (diffMs < 0) {
+      return {
+        days: 0,
+        formatted: "—"
+      }
+    }
+
+    // Convert to total days
+    const totalDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
+
+    // Format: "<1 day" if less than 1 day, otherwise "X days"
+    let formatted: string
+    if (totalDays === 0) {
+      formatted = "<1 day"
+    } else if (totalDays === 1) {
+      formatted = "1 day"
+    } else {
+      formatted = `${totalDays} days`
+    }
+
+    return {
+      days: totalDays,
+      formatted
+    }
+  } catch (error) {
+    console.error('Error calculating ticket duration:', error)
+    return {
+      days: 0,
+      formatted: "—"
+    }
+  }
+}

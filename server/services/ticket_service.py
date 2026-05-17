@@ -6,7 +6,10 @@ from typing import Optional, Dict, Any
 from datetime import datetime, date, timedelta
 from uuid import UUID
 
-from core.database import SessionLocal, Ticket, TicketEvent, AdminAuditLog, User
+from core.database import (
+    SessionLocal, Ticket, TicketEvent, AdminAuditLog, User,
+    IncidentReport, RootCauseAnalysis, ResolutionNote
+)
 from utils.exceptions import ValidationError, NotFoundError, ConflictError
 from core.logger import get_logger
 from utils.datetime_utils import serialize_date_fields, to_iso_date
@@ -19,6 +22,7 @@ class TicketService:
     def get_tickets(
         company_id: Optional[str] = None,
         status: Optional[str] = None,
+        level: Optional[str] = None,
         search: Optional[str] = None,
         limit: int = 50,
         offset: int = 0
@@ -54,11 +58,18 @@ class TicketService:
                     logger.warning(f"Invalid company_id format: {company_id}")
             
             if status:
-                valid_statuses = ["open", "in_progress", "resolved", "closed", "reopened"]
+                valid_statuses = ["open", "in_progress", "resolved", "closed", "reopened", "user_input_required", "on_hold"]
                 if status in valid_statuses:
                     query = query.filter(Ticket.status == status)
                 else:
                     logger.warning(f"Invalid status filter: {status}")
+
+            if level:
+                valid_levels = ["level-1", "level-2", "level-3"]
+                if level in valid_levels:
+                    query = query.filter(Ticket.level == level)
+                else:
+                    logger.warning(f"Invalid level filter: {level}")
             
             # Apply search filter if provided
             if search and search.strip():
@@ -231,7 +242,7 @@ class TicketService:
             if not ticket:
                 raise NotFoundError("Ticket not found")
             
-            valid_statuses = ["open", "in_progress", "resolved", "closed", "reopened"]
+            valid_statuses = ["open", "in_progress", "resolved", "closed", "reopened", "user_input_required", "on_hold"]
             if new_status not in valid_statuses:
                 raise ValidationError(f"Invalid status. Must be one of: {', '.join(valid_statuses)}")
             
@@ -274,6 +285,22 @@ class TicketService:
             db.commit()
             
             logger.info(f"✓ Ticket status updated: {ticket.ticket_no} now {new_status}")
+            
+            # Trigger email notification
+            try:
+                from .email_listener_service import EmailListenerService
+                EmailListenerService.on_ticket_status_updated(
+                    ticket_id=ticket_id,
+                    ticket_no=ticket.ticket_no,
+                    company_id=str(ticket.company_id),
+                    old_status=old_status,
+                    new_status=new_status,
+                    raised_by_user_id=str(ticket.raised_by_user_id),
+                    raised_by_user_name=ticket.raised_by_user.name if ticket.raised_by_user else "User",
+                    raised_by_user_email=ticket.raised_by_user.email if ticket.raised_by_user else ""
+                )
+            except Exception as e:
+                logger.warning(f"Failed to trigger email notification: {e}")
             
             # Deprecate embeddings when ticket is closed or reopened
             if new_status in ["closed", "reopened"]:
@@ -378,6 +405,21 @@ class TicketService:
             
             logger.info(f"✓ Ticket assigned: {ticket.ticket_no} → {engineer.name}")
             
+            # Trigger email notification
+            try:
+                from .email_listener_service import EmailListenerService
+                EmailListenerService.on_ticket_assigned(
+                    ticket_id=ticket_id,
+                    ticket_no=ticket.ticket_no,
+                    ticket_subject=ticket.subject,
+                    company_id=str(ticket.company_id),
+                    assigned_engineer_id=engineer_id,
+                    assigned_engineer_name=engineer.name,
+                    assigned_engineer_email=engineer.email
+                )
+            except Exception as e:
+                logger.warning(f"Failed to trigger email notification: {e}")
+            
             # Audit log
             if admin_id:
                 try:
@@ -443,7 +485,7 @@ class TicketService:
             
             # Tickets by status
             tickets_by_status = {}
-            for status in ["open", "in_progress", "resolved", "closed", "reopened"]:
+            for status in ["open", "in_progress", "resolved", "closed", "reopened", "user_input_required", "on_hold"]:
                 count = query.filter(Ticket.status == status).count()
                 if count > 0:
                     tickets_by_status[status] = count
@@ -487,18 +529,17 @@ class TicketService:
             ).count()
             
             avg_resolution_time = 0
-            closed_tickets_for_period = query.filter(
+            # Calculate average resolution time across ALL closed tickets (not limited by period)
+            all_closed_tickets = query.filter(
                 Ticket.status.in_(["closed", "resolved"]),
-                Ticket.closed_at.isnot(None),
-                Ticket.closed_at >= start_date,
-                Ticket.closed_at <= now
+                Ticket.closed_at.isnot(None)
             ).all()
             
-            logger.info(f"Found {len(closed_tickets_for_period)} closed tickets in period")
+            logger.info(f"Found {len(all_closed_tickets)} closed tickets in database")
             
-            if closed_tickets_for_period:
+            if all_closed_tickets:
                 closed_ticket_times = []
-                for ticket in closed_tickets_for_period:
+                for ticket in all_closed_tickets:
                     if ticket.closed_at and ticket.created_at:
                         resolution_time = (ticket.closed_at - ticket.created_at).total_seconds()
                         logger.debug(f"Ticket {ticket.ticket_no}: resolution_time={resolution_time}s")
@@ -508,7 +549,7 @@ class TicketService:
                         else:
                             logger.warning(f"Ticket {ticket.ticket_no} has negative resolution time: {resolution_time}s (created_at={ticket.created_at}, closed_at={ticket.closed_at})")
                 
-                logger.info(f"Valid closed ticket times: {len(closed_ticket_times)} out of {len(closed_tickets_for_period)}")
+                logger.info(f"Valid closed ticket times: {len(closed_ticket_times)} out of {len(all_closed_tickets)}")
                 
                 if closed_ticket_times:
                     avg_resolution_time = sum(closed_ticket_times) / len(closed_ticket_times)
@@ -527,31 +568,202 @@ class TicketService:
             end_date = now  # Already a date object from date.today()
 
             while current_date <= end_date:
-                daily_count = query.filter(
+                daily_created = query.filter(
                     Ticket.created_at == current_date
                 ).count()
+                daily_closed = query.filter(
+                    Ticket.closed_at == current_date,
+                    Ticket.closed_at.isnot(None)
+                ).count()
                 
-                if daily_count > 0:
-                    trends.append({
-                        "date": to_iso_date(current_date),
-                        "count": daily_count
-                    })
+                trends.append({
+                    "date": to_iso_date(current_date),
+                    "created": daily_created,
+                    "closed": daily_closed,
+                    "net": daily_created - daily_closed
+                })
                 
                 current_date += timedelta(days=1)
+
+            open_statuses = ["open", "in_progress", "reopened", "user_input_required", "on_hold"]
+            active_tickets = query.filter(Ticket.status.in_(open_statuses)).all()
+
+            def ticket_age_days(ticket: Ticket) -> int:
+                if not ticket.created_at:
+                    return 0
+                return max((now - ticket.created_at).days, 0)
+
+            aging_buckets = {
+                "0-1 days": 0,
+                "2-3 days": 0,
+                "4-7 days": 0,
+                "8-14 days": 0,
+                "15+ days": 0,
+            }
+            for ticket in active_tickets:
+                age = ticket_age_days(ticket)
+                if age <= 1:
+                    aging_buckets["0-1 days"] += 1
+                elif age <= 3:
+                    aging_buckets["2-3 days"] += 1
+                elif age <= 7:
+                    aging_buckets["4-7 days"] += 1
+                elif age <= 14:
+                    aging_buckets["8-14 days"] += 1
+                else:
+                    aging_buckets["15+ days"] += 1
+
+            needs_attention = sorted(active_tickets, key=ticket_age_days, reverse=True)[:5]
+            needs_attention_list = [
+                {
+                    "id": str(ticket.id),
+                    "ticket_no": ticket.ticket_no,
+                    "subject": ticket.subject,
+                    "status": ticket.status,
+                    "level": ticket.level,
+                    "company_name": ticket.company.name if ticket.company else None,
+                    "age_days": ticket_age_days(ticket),
+                    "created_at": to_iso_date(ticket.created_at),
+                }
+                for ticket in needs_attention
+            ]
+
+            stale_cutoff = now - timedelta(days=7)
+            stale_tickets = []
+            for ticket in active_tickets:
+                last_event_at = max(
+                    [event.created_at.date() for event in ticket.events if event.created_at] or [ticket.updated_at or ticket.created_at]
+                )
+                if last_event_at <= stale_cutoff:
+                    stale_tickets.append({
+                        "id": str(ticket.id),
+                        "ticket_no": ticket.ticket_no,
+                        "subject": ticket.subject,
+                        "status": ticket.status,
+                        "company_name": ticket.company.name if ticket.company else None,
+                        "last_activity_at": to_iso_date(last_event_at),
+                        "inactive_days": (now - last_event_at).days,
+                    })
+
+            open_ir_query = db.query(IncidentReport).filter(
+                IncidentReport.status.in_(["open", "in_progress"])
+            )
+            open_irs = open_ir_query.count()
+            overdue_irs = open_ir_query.filter(
+                IncidentReport.expected_resolution_date.isnot(None),
+                IncidentReport.expected_resolution_date < now
+            ).count()
+
+            closed_ticket_objs = query.filter(Ticket.status.in_(["closed", "resolved"])).all()
+            closed_missing_rca = sum(1 for ticket in closed_ticket_objs if not ticket.root_cause_analysis)
+            closed_missing_resolution = sum(1 for ticket in closed_ticket_objs if not ticket.resolution_note)
+            rca_count = db.query(RootCauseAnalysis).count()
+            resolution_note_count = db.query(ResolutionNote).count()
+
+            rca_completion_rate = round(((len(closed_ticket_objs) - closed_missing_rca) / len(closed_ticket_objs)) * 100, 2) if closed_ticket_objs else 0
+            resolution_note_completion_rate = round(((len(closed_ticket_objs) - closed_missing_resolution) / len(closed_ticket_objs)) * 100, 2) if closed_ticket_objs else 0
+
+            company_health = []
+            companies_seen = {}
+            for ticket in query.all():
+                company_name = ticket.company.name if ticket.company else "Unknown"
+                if company_name not in companies_seen:
+                    companies_seen[company_name] = {
+                        "company_name": company_name,
+                        "total": 0,
+                        "open": 0,
+                        "closed": 0,
+                        "with_ir": 0,
+                        "resolution_hours": [],
+                    }
+                item = companies_seen[company_name]
+                item["total"] += 1
+                if ticket.status in open_statuses:
+                    item["open"] += 1
+                if ticket.status in ["closed", "resolved"]:
+                    item["closed"] += 1
+                if ticket.has_ir:
+                    item["with_ir"] += 1
+                if ticket.closed_at and ticket.created_at and ticket.closed_at >= ticket.created_at:
+                    item["resolution_hours"].append((ticket.closed_at - ticket.created_at).total_seconds() / 3600)
+
+            for item in companies_seen.values():
+                hours = item.pop("resolution_hours")
+                item["closure_rate_percent"] = round((item["closed"] / item["total"]) * 100, 2) if item["total"] else 0
+                item["avg_resolution_hours"] = round(sum(hours) / len(hours), 2) if hours else 0
+                company_health.append(item)
+
+            company_health = sorted(
+                company_health,
+                key=lambda item: (item["open"], item["total"]),
+                reverse=True
+            )[:8]
+
+            category_performance = []
+            for category, count in sorted(tickets_by_category.items(), key=lambda item: item[1], reverse=True):
+                category_tickets = query.filter(Ticket.category == category).all()
+                category_closed = [t for t in category_tickets if t.status in ["closed", "resolved"]]
+                category_open = [t for t in category_tickets if t.status in open_statuses]
+                resolution_hours = [
+                    (t.closed_at - t.created_at).total_seconds() / 3600
+                    for t in category_closed
+                    if t.closed_at and t.created_at and t.closed_at >= t.created_at
+                ]
+                category_performance.append({
+                    "category": category,
+                    "total": count,
+                    "open": len(category_open),
+                    "closed": len(category_closed),
+                    "closure_rate_percent": round((len(category_closed) / count) * 100, 2) if count else 0,
+                    "avg_resolution_hours": round(sum(resolution_hours) / len(resolution_hours), 2) if resolution_hours else 0,
+                })
+
+            median_resolution_time_hours = 0
+            if all_closed_tickets:
+                median_values = sorted([
+                    (ticket.closed_at - ticket.created_at).total_seconds() / 3600
+                    for ticket in all_closed_tickets
+                    if ticket.closed_at and ticket.created_at and ticket.closed_at >= ticket.created_at
+                ])
+                if median_values:
+                    mid = len(median_values) // 2
+                    if len(median_values) % 2 == 0:
+                        median_resolution_time_hours = round((median_values[mid - 1] + median_values[mid]) / 2, 2)
+                    else:
+                        median_resolution_time_hours = round(median_values[mid], 2)
             
             logger.info(f"Analytics retrieved: {total_tickets} total, {open_tickets} open, {closed_tickets} closed")
             
             return {
                 "total_tickets": total_tickets,
                 "open_tickets": open_tickets,
-                "closed_tickets": closed_tickets,
-                "tickets_by_status": tickets_by_status,
-                "tickets_by_level": tickets_by_level,
-                "tickets_by_category": tickets_by_category,
+                "in_progress": tickets_by_status.get("in_progress", 0),
+                "resolved": tickets_by_status.get("resolved", 0),
+                "closed": closed_tickets,
+                "reopened": tickets_by_status.get("reopened", 0),
+                "avg_resolution_time_hours": avg_resolution_time,
+                "median_resolution_time_hours": median_resolution_time_hours,
+                "resolution_rate_percent": resolution_rate,
+                "categories": tickets_by_category,
+                "levels": tickets_by_level,
                 "tickets_created_last_n_days": tickets_created_last_n_days,
                 "closed_last_n_days": closed_last_n_days,
-                "avg_resolution_time_hours": avg_resolution_time,
-                "resolution_rate_percent": resolution_rate,
+                "aging_buckets": aging_buckets,
+                "needs_attention": needs_attention_list,
+                "stale_tickets": sorted(stale_tickets, key=lambda item: item["inactive_days"], reverse=True)[:5],
+                "stale_tickets_count": len(stale_tickets),
+                "open_irs": open_irs,
+                "overdue_irs": overdue_irs,
+                "quality": {
+                    "rca_count": rca_count,
+                    "resolution_note_count": resolution_note_count,
+                    "closed_missing_rca": closed_missing_rca,
+                    "closed_missing_resolution": closed_missing_resolution,
+                    "rca_completion_rate_percent": rca_completion_rate,
+                    "resolution_note_completion_rate_percent": resolution_note_completion_rate,
+                },
+                "company_health": company_health,
+                "category_performance": category_performance[:8],
                 "analysis_period_days": days,
                 "trends": trends
             }

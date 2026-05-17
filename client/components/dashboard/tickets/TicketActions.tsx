@@ -13,7 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Loader2, CheckCircle, Clock, AlertCircle } from "lucide-react"
+import { Loader2, CheckCircle, Clock, AlertCircle, HelpCircle, Pause } from "lucide-react"
 import { userService, User } from "@/services/user.service"
 
 interface TicketActionsProps {
@@ -26,6 +26,8 @@ interface TicketActionsProps {
 const STATUS_OPTIONS = [
   { value: "open", label: "Open", icon: AlertCircle },
   { value: "in_progress", label: "In Progress", icon: Clock },
+  { value: "user_input_required", label: "User Input Required", icon: HelpCircle },
+  { value: "on_hold", label: "On Hold", icon: Pause },
   { value: "resolved", label: "Resolved", icon: CheckCircle },
   { value: "closed", label: "Closed", icon: CheckCircle },
   { value: "reopened", label: "Reopened", icon: AlertCircle },

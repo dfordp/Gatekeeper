@@ -17,8 +17,6 @@ export default function Sidebar() {
     { name: "Users", href: "/dashboard/users", icon: Users },
     ...(admin?.role === "admin" ? [{ name: "Admins", href: "/dashboard/admins", icon: Shield }] : []),
      ...(admin?.role === "admin" ? [{ name: "Chat", href: "/dashboard/chat", icon: MessageCircle }] : []),
-    { name: "Analytics", href: "/dashboard/analytics", icon: BarChart3 },
-    { name: "Settings", href: "/dashboard/settings", icon: Settings },
     ...(admin?.role === "admin" || admin?.role === "manager" ? [{
       name: "Companies",
       href: "/dashboard/companies",

@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { RefreshCw, ChevronRight, Inbox } from "lucide-react"
+import { calculateTicketOpenDuration } from "@/lib/date-utils"
 
 interface Ticket {
   id: string
@@ -18,6 +19,7 @@ interface Ticket {
   company_name?: string | null
   created_by?: string | null
   created_at: string
+  closed_at?: string | null
 }
 
 interface TicketsTableProps {
@@ -28,6 +30,8 @@ interface TicketsTableProps {
 const statusColors: Record<string, string> = {
   open: "bg-red-100 text-red-800",
   in_progress: "bg-yellow-100 text-yellow-800",
+  user_input_required: "bg-blue-100 text-blue-800",
+  on_hold: "bg-purple-100 text-purple-800",
   resolved: "bg-green-100 text-green-800",
   closed: "bg-gray-100 text-gray-800",
   reopened: "bg-orange-100 text-orange-800",
@@ -87,6 +91,7 @@ export default function TicketsTable({ tickets, onRefresh }: TicketsTableProps) 
                   <th className="text-left py-3 px-4">Level</th>
                   <th className="text-left py-3 px-4">Company</th>
                   <th className="text-left py-3 px-4">Created</th>
+                  <th className="text-left py-3 px-4">Open For</th>
                   <th className="text-right py-3 px-4"></th>
                 </tr>
               </thead>
@@ -115,6 +120,11 @@ export default function TicketsTable({ tickets, onRefresh }: TicketsTableProps) 
                     <td className="py-3 px-4 text-gray-600">
                       {ticket.created_at
                         ? new Date(ticket.created_at).toLocaleDateString()
+                        : <span className="text-gray-400">—</span>}
+                    </td>
+                    <td className="py-3 px-4 text-gray-600">
+                      {ticket.created_at
+                        ? calculateTicketOpenDuration(ticket.created_at, ticket.closed_at).formatted
                         : <span className="text-gray-400">—</span>}
                     </td>
                     <td className="py-3 px-4 text-right">

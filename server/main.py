@@ -28,7 +28,7 @@ from groq import Groq
 
 # Core imports
 from core.database import init_db, test_connection
-from core.config import CORS_ORIGINS, TELEGRAM_TOKEN, TELEGRAM_API, GROQ_API_KEY, MODEL, VISION_MODEL
+from core.config import CORS_ORIGINS, TELEGRAM_TOKEN, TELEGRAM_API, GROQ_API_KEY, MODEL, VISION_MODEL, WHATSAPP_WEBHOOK_VERIFY_TOKEN
 from core.logger import get_logger
 
 from utils.datetime_utils import to_iso_date
@@ -51,6 +51,7 @@ from routes.cache_routes import router as cache_router
 from routes.ir_routes import router as ir_router
 from routes.chat_routes import router as chat_router
 from routes.email_routes import router as email_router
+from routes.email_admin_routes import router as email_admin_router
 from routes.zoho_oauth_routes import router as zoho_oauth_router
 
 # Legacy session management (keeping for bot compatibility)
@@ -140,11 +141,32 @@ app.include_router(cache_router)
 app.include_router(ir_router)
 app.include_router(chat_router)
 app.include_router(email_router)
+app.include_router(email_admin_router)
 app.include_router(zoho_oauth_router)
 
 
 # Legacy HTTP routes (existing bot)
 app.include_router(http_router)
+
+
+@app.get("/whatsapp/webhook")
+async def verify_whatsapp_webhook(request: Request):
+    """Verify WhatsApp webhook with Meta"""
+    token = request.query_params.get("hub.verify_token")
+    challenge = request.query_params.get("hub.challenge")
+    
+    if token == WHATSAPP_WEBHOOK_VERIFY_TOKEN:
+        return int(challenge)
+    return {"error": "Invalid token"}, 403
+
+@app.post("/whatsapp/webhook")
+async def whatsapp_webhook(req: Request):
+    """Handle incoming WhatsApp messages"""
+    # Parse Meta's webhook format
+    # Extract phone_number_id, messages, media downloads
+    # Reuse similar logic to Telegram: run_llm(), extract_field(), vision analysis
+    print(req)
+
 
 # Additional routers will be registered here as they're created
 # - Ticket routes (Phase 3)
@@ -1024,6 +1046,14 @@ async def startup_event():
     
     # Initialize database
     init_db()
+    
+    # Initialize email templates
+    try:
+        from services.email_configuration_service import EmailConfigurationService
+        EmailConfigurationService.create_default_templates()
+        logger.info("✓ Email templates initialized")
+    except Exception as e:
+        logger.warning(f"Email template initialization failed: {e}")
     
     # Initialize cache
     try:
