@@ -60,7 +60,8 @@ class ChatTicketService:
         self,
         chat_session_id: UUID,
         issue_description: str,
-        image_path: Optional[str] = None
+        image_path: Optional[str] = None,
+        vision_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Analyze an issue WITHOUT creating a ticket.
@@ -114,61 +115,36 @@ class ChatTicketService:
             if not issue_description or len(issue_description.strip()) < 10:
                 raise ValidationError("Issue description must be at least 10 characters")
             
-            # Step 0: Extract vision context from image if provided
-            vision_context = None
+            # Step 0: Use pre-extracted vision context or extract now
+            # vision_context may be passed in to avoid a redundant Groq API call
+            # when the photo handler already ran vision analysis.
             enriched_description = issue_description
-            
-            if image_path:
+
+            if vision_context:
+                logger.info(f"Using pre-extracted vision context ({len(vision_context)} chars)")
+                enriched_description = f"{issue_description}\n\nVisual Context: {vision_context}"
+            elif image_path:
                 try:
                     vision_context = self._extract_vision_context(image_path)
                     if vision_context:
                         logger.info(f"Vision analysis: {vision_context[:100]}...")
-                        # Enhance description with vision context for better analysis
                         enriched_description = f"{issue_description}\n\nVisual Context: {vision_context}"
                 except Exception as e:
                     logger.warning(f"Failed to analyze image: {e}")
-            
-            # Step 1: Extract intent + category via Groq
-            groq_category = None
-            groq_confidence = 0
-            groq_intent = None
-            
-            groq_service = self._get_groq_service()
-            if groq_service:
-                try:
-                    logger.info(f"Analyzing issue for company {company.name}")
-                    intent_result = groq_service.extract_intent_and_data(
-                        user_message=enriched_description,
-                        company_id=chat_session.company_id,
-                        user_id=chat_session.user_id
-                    )
-                    
-                    groq_category = intent_result.get("entities", {}).get("category")
-                    groq_confidence = intent_result.get("confidence", 50)
-                    groq_intent = intent_result.get("intent")
-                    
-                    logger.info(
-                        f"Groq analysis: intent={groq_intent}, "
-                        f"category={groq_category}, confidence={groq_confidence}"
-                    )
-                
-                except Exception as e:
-                    logger.warning(f"Failed to extract intent via Groq: {e}")
-            
-            # Step 2: Get adaptive threshold
-            # If image was provided, lower threshold slightly for better context matching
+
+            # Step 1: Get adaptive threshold (no LLM category needed — use default)
             adaptive_threshold = self._get_adaptive_threshold(
                 company_id=chat_session.company_id,
-                category=groq_category,
+                category=None,
                 has_image=bool(image_path)
             )
-            
-            logger.info(f"Adaptive threshold: {adaptive_threshold:.3f} for category '{groq_category}'")
-            
-            # Step 3: Search for similar solutions
+
+            logger.info(f"Adaptive threshold: {adaptive_threshold:.3f}")
+
+            # Step 2: Semantic search via Qdrant — no LLM preprocessing
             similar_solutions = []
-            inferred_category = groq_category
-            
+            inferred_category = None
+
             try:
                 search_results = self.search_service.search_for_solutions(
                     query=enriched_description,
@@ -176,50 +152,47 @@ class ChatTicketService:
                     limit=3,
                     min_similarity=adaptive_threshold
                 )
-                
+
                 if search_results:
-                    # Use the category from the top result
-                    top_result = search_results[0]
-                    inferred_category = top_result.get("category") or groq_category
-                    
-                    # Format results for display
+                    # Derive category from the top Qdrant result, not from LLM
+                    inferred_category = search_results[0].get("category")
+
                     similar_solutions = [
                         {
+                            "ticket_id": r.get("ticket_id"),
                             "ticket_no": r.get("ticket_no"),
                             "similarity_score": r.get("similarity_score"),
                             "subject": r.get("solution_title"),
                             "solution_description": r.get("solution_description"),
                             "category": r.get("category"),
-                            "status": r.get("status")
+                            "status": r.get("status"),
                         }
                         for r in search_results
                     ]
-                    
-                    logger.info(f"Found {len(similar_solutions)} similar solutions")
-            
+
+                    logger.info(
+                        f"Qdrant: {len(similar_solutions)} results, "
+                        f"top category='{inferred_category}'"
+                    )
+
             except Exception as e:
                 logger.warning(f"Failed to search for solutions: {e}")
-            
-            # Validate category
+
+            # Validate / normalise category
             valid_categories = [
                 "login-access", "license", "installation", "upload-save",
                 "workflow", "performance", "integration", "data-configuration", "other"
             ]
-            if inferred_category and inferred_category not in valid_categories:
-                inferred_category = groq_category or "other"
-            
+            if inferred_category not in valid_categories:
+                inferred_category = "other"
+
             result = {
-                "inferred_category": inferred_category or "other",
+                "inferred_category": inferred_category,
                 "adaptive_threshold": round(adaptive_threshold, 3),
                 "similar_solutions": similar_solutions,
-                "groq_intent": groq_intent,
-                "groq_confidence": groq_confidence
+                "vision_context": vision_context or "",
             }
-            
-            # Include vision context in result if available
-            if vision_context:
-                result["vision_context"] = vision_context
-            
+
             return result
         
         finally:
@@ -274,49 +247,93 @@ class ChatTicketService:
     
     
     def create_ticket_from_chat(
-            self,
-            chat_session_id: UUID,
-            issue_description: str,
-            inferred_category: str,
-        ) -> Optional[Dict[str, Any]]:
-            """
-            Create ticket from chat session.
-            Ticket number is generated atomically by create_ticket() - do NOT pre-generate it.
-            """
-            db = SessionLocal()
-            try:
-                chat_session = db.query(ChatSession).filter(
-                    ChatSession.id == chat_session_id
-                ).first()
-    
-                if not chat_session:
-                    raise ValidationError("Chat session not found")
-    
-                logger.info(f"Creating ticket from chat session {chat_session_id}")
-    
-                # Pass ticket_no=None to let create_ticket() generate it atomically
-                # This prevents race conditions with other concurrent ticket creations
-                ticket_result = TicketCreationService.create_ticket(
-                    subject=issue_description[:100],
-                    detailed_description=issue_description,
-                    company_id=str(chat_session.company_id),
-                    raised_by_user_id=str(chat_session.user_id),
-                    category=inferred_category,
-                    level="level-1",
-                    created_at=date.today(),
-                    created_by_admin_id=None,
-                    ticket_no=None  # CRITICAL: Let create_ticket generate this atomically
-                )
-    
-                logger.info(f"✓ Ticket created: {ticket_result.get('ticket_no')}")
-                return ticket_result
-    
-            except Exception as e:
-                logger.error(f"Error creating ticket from chat: {e}", exc_info=True)
-                raise
-    
-            finally:
-                db.close()
+        self,
+        chat_session_id: UUID,
+        issue_description: str,
+        inferred_category: str,
+        subject: Optional[str] = None,
+        image_path: Optional[str] = None,
+        image_paths: Optional[list] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Create ticket from chat session.
+        Ticket number is generated atomically by create_ticket() - do NOT pre-generate it.
+        """
+        import mimetypes
+        import os
+        from core.database import Attachment, Ticket
+
+        db = SessionLocal()
+        try:
+            chat_session = db.query(ChatSession).filter(
+                ChatSession.id == chat_session_id
+            ).first()
+
+            if not chat_session:
+                raise ValidationError("Chat session not found")
+
+            logger.info(f"Creating ticket from chat session {chat_session_id}")
+
+            ticket_subject = (subject or issue_description)[:120].strip()
+
+            ticket_result = TicketCreationService.create_ticket(
+                subject=ticket_subject,
+                detailed_description=issue_description,
+                company_id=str(chat_session.company_id),
+                raised_by_user_id=str(chat_session.user_id),
+                category=inferred_category,
+                level="level-1",
+                created_at=date.today(),
+                created_by_admin_id=None,
+                ticket_no=None
+            )
+
+            logger.info(f"✓ Ticket created: {ticket_result.get('ticket_no')}")
+
+            # Attach all provided screenshots to the ticket
+            all_paths = image_paths or ([image_path] if image_path else [])
+            if all_paths:
+                ticket_id = ticket_result.get("ticket_id")
+                if ticket_id:
+                    try:
+                        ticket_row = db.query(Ticket).filter(
+                            Ticket.id == UUID(ticket_id)
+                        ).first()
+                        current_ids = list(ticket_row.attachment_ids or []) if ticket_row else []
+
+                        for path in all_paths:
+                            if not path or not os.path.exists(path):
+                                continue
+                            mime, _ = mimetypes.guess_type(path)
+                            mime = mime or "image/jpeg"
+                            att = Attachment(
+                                ticket_id=UUID(ticket_id),
+                                type="image",
+                                file_path=path,
+                                mime_type=mime,
+                                created_at=date.today(),
+                            )
+                            db.add(att)
+                            db.flush()
+                            current_ids.append(str(att.id))
+                            logger.info(f"  ✓ Attached {os.path.basename(path)}")
+
+                        if ticket_row:
+                            ticket_row.attachment_ids = current_ids
+
+                        db.commit()
+                        logger.info(f"✓ {len(all_paths)} screenshot(s) attached to {ticket_result.get('ticket_no')}")
+                    except Exception as e:
+                        logger.warning(f"Failed to attach screenshots: {e}")
+
+            return ticket_result
+
+        except Exception as e:
+            logger.error(f"Error creating ticket from chat: {e}", exc_info=True)
+            raise
+
+        finally:
+            db.close()
         
     def _get_adaptive_threshold(
         self,

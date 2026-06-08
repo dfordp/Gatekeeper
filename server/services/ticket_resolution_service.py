@@ -167,51 +167,33 @@ class TicketResolutionService:
     def format_similar_tickets_for_telegram(
         similar_tickets: List[Dict[str, Any]]
     ) -> str:
-        """
-        Format similar tickets list for Telegram display.
-        Shows ticket list with match percentage and quick preview.
-        """
+        """Format similar tickets list for Telegram display."""
         if not similar_tickets:
-            return "🔍 No similar tickets found.\n\nLet's create a new ticket for your issue."
-        
-        message = f"🔍 Found {len(similar_tickets)} similar issue(s):\n\n"
-        
+            return "I couldn't find anything similar in our history — I'll create a new ticket for you."
+
+        count = len(similar_tickets)
+        message = f"I found {count} similar {'ticket' if count == 1 else 'tickets'} that might help:\n\n"
+
         for idx, ticket in enumerate(similar_tickets, 1):
             match_pct = ticket.get('similarity_score', 0)
-            
-            # Match quality indicator
-            if match_pct >= 85:
-                emoji = "🟢"
-                quality = "Excellent Match"
-            elif match_pct >= 75:
-                emoji = "🟡"
-                quality = "Good Match"
-            else:
-                emoji = "🔴"
-                quality = "Fair Match"
-            
-            message += (
-                f"{emoji} **{idx}. {ticket.get('ticket_no', 'N/A')}** - {match_pct}% ({quality})\n"
-                f"   📌 {ticket.get('subject', 'No subject')}\n"
-                f"   👤 {ticket.get('created_by', 'Unknown')} • {ticket.get('created_date', 'Unknown')}\n"
-                f"   ✅ Status: {ticket.get('status', 'unknown').upper()}\n"
-            )
-            
-            # Show resolution preview if available
+            subject = ticket.get('subject', 'No subject')
+            created_by = ticket.get('created_by', 'Unknown')
+            created_date = ticket.get('created_date', 'Unknown')
+            status = ticket.get('status', 'unknown').upper()
+
+            message += f"{idx}. {ticket.get('ticket_no', 'N/A')} — {subject}\n"
+            message += f"   Raised by {created_by} on {created_date} • {status}\n"
+
             if ticket.get('resolution'):
-                preview = ticket['resolution'][:60].rstrip() + ("..." if len(ticket['resolution']) > 60 else "")
-                message += f"   💡 {preview}\n"
-            
+                preview = ticket['resolution'][:80].rstrip()
+                if len(ticket['resolution']) > 80:
+                    preview += "..."
+                message += f"   Fix: {preview}\n"
+
             message += "\n"
-        
-        message += (
-            "📋 **Options:**\n"
-            "• Reply with **number** (1-3) to see full details\n"
-            "• Reply **'yes'** if one of these solves your issue\n"
-            "• Reply **'no'** to create a new ticket\n"
-            "• Reply **'create new'** to skip and create anyway"
-        )
-        
+
+        message += "Reply with a number to see full details, 'yes' if one resolves your issue, or 'no' to open a new ticket."
+
         return message
             
     @staticmethod
@@ -243,47 +225,42 @@ class TicketResolutionService:
             rca_attachments = ticket.get("rca_attachments", [])
             
             # Build message
-            message = f"""{ticket_no} - {subject}
-    
-    Created by: {created_by}
-    Created: {created_date}
-    Updated: {updated_date}
-    Status: {status}
-    Category: {category}
-    Priority: {priority}
-    Match: {similarity_score}%
-    """
-            
+            message = f"{ticket_no} — {subject}\n"
+            message += f"Raised by {created_by} on {created_date}"
+            if updated_date and updated_date != created_date:
+                message += f" • last updated {updated_date}"
+            message += f"\nStatus: {status}\n"
+
             # Add main attachments if available
             if attachments:
-                message += f"\nATTACHMENTS: {len(attachments)} file(s)\n"
-                for att in attachments[:5]:  # Show first 5
-                    message += f"  {att.get('name', 'file')}\n"
-            
+                message += f"\n{len(attachments)} attachment(s): "
+                message += ", ".join(att.get('name', 'file') for att in attachments[:5])
+                message += "\n"
+
             # Add resolution if available
             if resolution:
-                message += f"\nSOLUTION:\n{resolution}\n"
-            
+                message += f"\nHow it was resolved:\n{resolution}\n"
+
             # Add resolution steps if available
             if resolution_steps:
-                message += f"\nSTEPS:\n{resolution_steps}\n"
-            
+                message += f"\nSteps taken:\n{resolution_steps}\n"
+
             # Add root cause if available
             if root_cause:
-                message += f"\nROOT CAUSE:\n{root_cause}\n"
-            
+                message += f"\nRoot cause:\n{root_cause}\n"
+
             # Add RCA attachments if available
             if rca_attachments:
-                message += f"\nREFERENCES: {len(rca_attachments)} file(s)\n"
-                for att in rca_attachments[:5]:  # Show first 5
-                    message += f"  {att.get('name', 'file')}\n"
-            
+                message += f"\nSupporting files: "
+                message += ", ".join(att.get('name', 'file') for att in rca_attachments[:5])
+                message += "\n"
+
             # Add prevention measures if available
             if prevention and prevention != "Not Applicable":
-                message += f"\nPREVENTION:\n{prevention}\n"
-            
+                message += f"\nPrevention:\n{prevention}\n"
+
             # Add feedback prompt
-            message += "\nDid this help? Reply: yes / no / need more help"
+            message += "\nDoes this resolve your issue? Reply yes or no."
             
             logger.info(f"Formatted ticket details: {ticket_no}, attachments={len(attachments)}, rca_attachments={len(rca_attachments)}")
             

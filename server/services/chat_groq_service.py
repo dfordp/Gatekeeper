@@ -177,11 +177,22 @@ Respond ONLY with valid JSON (no markdown, no code blocks):
             # Determine image type
             mime_type = "image/png" if image_path.lower().endswith(".png") else "image/jpeg"
             
-            # Build prompt
-            vision_prompt = "Analyze this image and describe what you see. "
-            if context:
-                vision_prompt += f"Context: {context}. "
-            vision_prompt += "Identify any error messages, issues, or relevant information."
+            # Build prompt — structured extraction, not a prose description
+            vision_prompt = (
+                "Extract the following from this screenshot. "
+                "Only include fields that are clearly visible. "
+                "Do NOT describe the visual layout or say 'The image depicts'.\n\n"
+                "APPLICATION: (software/app name shown)\n"
+                "ERROR_TITLE: (exact text of the error message title, quoted)\n"
+                "ERROR_BODY: (exact text of error body or detail, if any)\n"
+                "SERVER: (server name, URL, or instance shown, if any)\n"
+                "ACTION: (what the user was doing when the error occurred)\n\n"
+                "Example:\n"
+                "APPLICATION: Teamcenter\n"
+                'ERROR_TITLE: "Error finding license for selected module"\n'
+                "SERVER: FMVMDEV\n"
+                "ACTION: Logging in"
+            )
             
             # Call Groq Vision API
             response = self.client.chat.completions.create(
